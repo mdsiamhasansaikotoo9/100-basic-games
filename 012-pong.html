@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Pong</title><script>
+// Shared helpers for every arcade game
+const G = (() => {
+  const st = document.createElement('style');
+  st.textContent = `
+html,body{margin:0;height:100%;background:#0b0820;color:#fff;font-family:system-ui,-apple-system,sans-serif;overflow:hidden;
+  touch-action:none;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
+.hud{position:fixed;top:12px;left:0;right:0;display:flex;justify-content:space-between;padding:0 18px;font-weight:700;
+  letter-spacing:1px;z-index:5;pointer-events:none;color:#cfe8ff}
+.hud b{color:#fff;font-size:20px;text-shadow:0 0 10px #3df5ff}
+.ov{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  background:rgba(8,5,25,.85);z-index:10;text-align:center;padding:20px}
+.ov h1{margin:0 0 10px;font-size:clamp(30px,8vw,52px);background:linear-gradient(90deg,#3df5ff,#ff3df0);
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.ov p{opacity:.88;line-height:1.6;max-width:340px;margin:6px 0}
+.ov button{margin-top:18px;font:inherit;font-weight:800;font-size:18px;padding:13px 34px;border:0;border-radius:999px;
+  background:linear-gradient(90deg,#3df5ff,#ff3df0);color:#0b0820;cursor:pointer}
+`;
+  document.head.appendChild(st);
+
+  let ac;
+  function beep(f, d = .08, type = 'sine', v = .1) {
+    try {
+      ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.type = type; o.frequency.value = f;
+      g.gain.setValueAtTime(v, ac.currentTime);
+      g.gain.exponentialRampToValueAtTime(.001, ac.currentTime + d);
+      o.connect(g).connect(ac.destination); o.start(); o.stop(ac.currentTime + d);
+    } catch (e) {}
+  }
+  function getBest(k) { try { return +localStorage.getItem('arc_' + k) || 0 } catch (e) { return 0 } }
+  function setBest(k, v) { try { localStorage.setItem('arc_' + k, v) } catch (e) {} }
+  // Save if higher (or lower when lowerIsBetter). Returns current best.
+  function best(k, v, lowerIsBetter) {
+    const b = getBest(k);
+    if (v != null && (!b || (lowerIsBetter ? v < b : v > b))) { setBest(k, v); return v }
+    return b;
+  }
+  function set(id, v) { const e = document.getElementById(id); if (e) e.textContent = v }
+
+  function overlay(title, html, btn, cb) {
+    let o = document.querySelector('.ov');
+    if (!o) { o = document.createElement('div'); o.className = 'ov'; document.body.appendChild(o) }
+    o.innerHTML = `<h1>${title}</h1><p>${html}</p><button>${btn}</button>`;
+    o.style.display = 'flex';
+    o.addEventListener('pointerdown', e => e.stopPropagation());
+    o.querySelector('button').onclick = e => { e.stopPropagation(); o.style.display = 'none'; beep(440, .08, 'triangle'); cb() };
+  }
+
+  // Swipe (touch/mouse) + arrow keys / WASD → 'L','R','U','D'
+  function swipe(cb) {
+    let sx = null, sy = null;
+    addEventListener('pointerdown', e => { sx = e.clientX; sy = e.clientY });
+    addEventListener('pointerup', e => {
+      if (sx == null) return;
+      const dx = e.clientX - sx, dy = e.clientY - sy; sx = null;
+      if (Math.max(Math.abs(dx), Math.abs(dy)) < 20) return;
+      cb(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'R' : 'L') : (dy > 0 ? 'D' : 'U'));
+    });
+    addEventListener('keydown', e => {
+      const m = { ArrowLeft: 'L', ArrowRight: 'R', ArrowUp: 'U', ArrowDown: 'D', a: 'L', d: 'R', w: 'U', s: 'D' }[e.key];
+      if (m) { e.preventDefault(); cb(m) }
+    });
+  }
+
+  // Full-screen crisp canvas. Returns {c, x, W, H}; set .onresize to react.
+  function canvas() {
+    const c = document.createElement('canvas');
+    c.style.cssText = 'display:block;width:100vw;height:100vh';
+    document.body.prepend(c);
+    const o = { c, x: c.getContext('2d'), W: 0, H: 0 };
+    function r() {
+      const d = Math.min(devicePixelRatio || 1, 2);
+      o.W = innerWidth; o.H = innerHeight; c.width = o.W * d; c.height = o.H * d;
+      o.x.setTransform(d, 0, 0, d, 0, 0); o.onresize && o.onresize();
+    }
+    addEventListener('resize', r); r();
+    return o;
+  }
+
+  // Game loop with delta time (seconds, capped)
+  function loop(fn) {
+    let last = performance.now();
+    function f(t) { const dt = Math.min(.05, (t - last) / 1000); last = t; fn(dt); requestAnimationFrame(f) }
+    requestAnimationFrame(f);
+  }
+
+  return { beep, getBest, setBest, best, set, overlay, swipe, canvas, loop };
+})();
+
+</script></head><body>
+<div class="hud"><span>You <b id="p">0</b></span><span>Wins <b id="b">0</b></span><span>CPU <b id="c">0</b></span></div>
+<script>
+const K = G.canvas(), x = K.x, WIN = 7;
+let P = null, C, ball, ps = 0, cs = 0, run = false, wait = 0, keys = {};
+G.set('b', G.getBest('pong'));
+function serve(dir) { ball = { x: K.W / 2, y: K.H / 2, vx: (Math.random() - .5) * 240, vy: dir * K.H * .45, r: 8 }; wait = .8 }
+function start() {
+  const w = Math.max(70, K.W * .22); P = { x: K.W / 2, w }; C = { x: K.W / 2, w };
+  ps = cs = 0; G.set('p', 0); G.set('c', 0); serve(1); run = true;
+}
+const mv = e => { if (P) P.x = e.clientX };
+addEventListener('pointermove', mv); addEventListener('pointerdown', mv);
+addEventListener('keydown', e => keys[e.key] = 1); addEventListener('keyup', e => keys[e.key] = 0);
+function hit(pad, dirOut) {
+  const off = Math.max(-1, Math.min(1, (ball.x - pad.x) / (pad.w / 2)));
+  const sp = Math.min(Math.hypot(ball.vx, ball.vy) * 1.06, K.H * 1.15), a = off * 1.0;
+  ball.vx = Math.sin(a) * sp; ball.vy = dirOut * Math.cos(a) * sp; G.beep(dirOut < 0 ? 440 : 330, .05, 'square', .05);
+}
+function point(you) {
+  if (you) { ps++; G.beep(800, .15, 'triangle') } else { cs++; G.beep(160, .25, 'sawtooth') }
+  G.set('p', ps); G.set('c', cs);
+  if (ps >= WIN || cs >= WIN) {
+    run = false;
+    if (ps >= WIN) { const w = G.getBest('pong') + 1; G.setBest('pong', w); G.set('b', w) }
+    G.overlay(ps >= WIN ? 'You win! 🏆' : 'CPU wins', ps + ' – ' + cs, 'Play again', start);
+  } else serve(you ? -1 : 1);
+}
+function update(dt) {
+  if (!run) return;
+  if (keys.ArrowLeft) P.x -= 700 * dt; if (keys.ArrowRight) P.x += 700 * dt;
+  P.x = Math.max(P.w / 2, Math.min(K.W - P.w / 2, P.x));
+  // CPU
+  const target = ball.vy < 0 ? ball.x : K.W / 2, cpuSp = K.W * .7 + ps * 25, d = target - C.x;
+  C.x += Math.max(-cpuSp * dt, Math.min(cpuSp * dt, d)); C.x = Math.max(C.w / 2, Math.min(K.W - C.w / 2, C.x));
+  if (wait > 0) { wait -= dt; return }
+  const b = ball; b.x += b.vx * dt; b.y += b.vy * dt;
+  if (b.x < b.r) { b.x = b.r; b.vx = Math.abs(b.vx) } if (b.x > K.W - b.r) { b.x = K.W - b.r; b.vx = -Math.abs(b.vx) }
+  const py = K.H - 60, cy = 60;
+  if (b.vy > 0 && b.y + b.r >= py && b.y - b.r <= py + 12 && Math.abs(b.x - P.x) < P.w / 2 + b.r) { b.y = py - b.r; hit(P, -1) }
+  if (b.vy < 0 && b.y - b.r <= cy + 12 && b.y + b.r >= cy && Math.abs(b.x - C.x) < C.w / 2 + b.r) { b.y = cy + 12 + b.r; hit(C, 1) }
+  if (b.y < -20) point(true); else if (b.y > K.H + 20) point(false);
+}
+function draw() {
+  x.fillStyle = '#0b0820'; x.fillRect(0, 0, K.W, K.H);
+  x.strokeStyle = 'rgba(207,232,255,.2)'; x.setLineDash([10, 10]); x.beginPath(); x.moveTo(0, K.H / 2); x.lineTo(K.W, K.H / 2); x.stroke(); x.setLineDash([]);
+  if (!P) return;
+  x.shadowBlur = 16;
+  x.shadowColor = x.fillStyle = '#3df5ff'; x.fillRect(P.x - P.w / 2, K.H - 60, P.w, 12);
+  x.shadowColor = x.fillStyle = '#ff3df0'; x.fillRect(C.x - C.w / 2, 60, C.w, 12);
+  x.shadowColor = x.fillStyle = '#fff'; x.beginPath(); x.arc(ball.x, ball.y, ball.r, 0, 7); x.fill();
+  x.shadowBlur = 0;
+}
+G.loop(dt => { update(dt); draw() });
+G.overlay('Pong', 'Drag (or arrow keys) to move your blue paddle.<br>Hit the ball near the edge to angle it.<br>First to 7 wins.', 'Start', start);
+</script></body></html>

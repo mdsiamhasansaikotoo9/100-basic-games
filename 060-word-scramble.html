@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Word Scramble</title><script>
+// Shared helpers for every arcade game
+const G = (() => {
+  const st = document.createElement('style');
+  st.textContent = `
+html,body{margin:0;height:100%;background:#0b0820;color:#fff;font-family:system-ui,-apple-system,sans-serif;overflow:hidden;
+  touch-action:none;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
+.hud{position:fixed;top:12px;left:0;right:0;display:flex;justify-content:space-between;padding:0 18px;font-weight:700;
+  letter-spacing:1px;z-index:5;pointer-events:none;color:#cfe8ff}
+.hud b{color:#fff;font-size:20px;text-shadow:0 0 10px #3df5ff}
+.ov{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  background:rgba(8,5,25,.85);z-index:10;text-align:center;padding:20px}
+.ov h1{margin:0 0 10px;font-size:clamp(30px,8vw,52px);background:linear-gradient(90deg,#3df5ff,#ff3df0);
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.ov p{opacity:.88;line-height:1.6;max-width:340px;margin:6px 0}
+.ov button{margin-top:18px;font:inherit;font-weight:800;font-size:18px;padding:13px 34px;border:0;border-radius:999px;
+  background:linear-gradient(90deg,#3df5ff,#ff3df0);color:#0b0820;cursor:pointer}
+`;
+  document.head.appendChild(st);
+
+  let ac;
+  function beep(f, d = .08, type = 'sine', v = .1) {
+    try {
+      ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.type = type; o.frequency.value = f;
+      g.gain.setValueAtTime(v, ac.currentTime);
+      g.gain.exponentialRampToValueAtTime(.001, ac.currentTime + d);
+      o.connect(g).connect(ac.destination); o.start(); o.stop(ac.currentTime + d);
+    } catch (e) {}
+  }
+  function getBest(k) { try { return +localStorage.getItem('arc_' + k) || 0 } catch (e) { return 0 } }
+  function setBest(k, v) { try { localStorage.setItem('arc_' + k, v) } catch (e) {} }
+  // Save if higher (or lower when lowerIsBetter). Returns current best.
+  function best(k, v, lowerIsBetter) {
+    const b = getBest(k);
+    if (v != null && (!b || (lowerIsBetter ? v < b : v > b))) { setBest(k, v); return v }
+    return b;
+  }
+  function set(id, v) { const e = document.getElementById(id); if (e) e.textContent = v }
+
+  function overlay(title, html, btn, cb) {
+    let o = document.querySelector('.ov');
+    if (!o) { o = document.createElement('div'); o.className = 'ov'; document.body.appendChild(o) }
+    o.innerHTML = `<h1>${title}</h1><p>${html}</p><button>${btn}</button>`;
+    o.style.display = 'flex';
+    o.addEventListener('pointerdown', e => e.stopPropagation());
+    o.querySelector('button').onclick = e => { e.stopPropagation(); o.style.display = 'none'; beep(440, .08, 'triangle'); cb() };
+  }
+
+  // Swipe (touch/mouse) + arrow keys / WASD → 'L','R','U','D'
+  function swipe(cb) {
+    let sx = null, sy = null;
+    addEventListener('pointerdown', e => { sx = e.clientX; sy = e.clientY });
+    addEventListener('pointerup', e => {
+      if (sx == null) return;
+      const dx = e.clientX - sx, dy = e.clientY - sy; sx = null;
+      if (Math.max(Math.abs(dx), Math.abs(dy)) < 20) return;
+      cb(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'R' : 'L') : (dy > 0 ? 'D' : 'U'));
+    });
+    addEventListener('keydown', e => {
+      const m = { ArrowLeft: 'L', ArrowRight: 'R', ArrowUp: 'U', ArrowDown: 'D', a: 'L', d: 'R', w: 'U', s: 'D' }[e.key];
+      if (m) { e.preventDefault(); cb(m) }
+    });
+  }
+
+  // Full-screen crisp canvas. Returns {c, x, W, H}; set .onresize to react.
+  function canvas() {
+    const c = document.createElement('canvas');
+    c.style.cssText = 'display:block;width:100vw;height:100vh';
+    document.body.prepend(c);
+    const o = { c, x: c.getContext('2d'), W: 0, H: 0 };
+    function r() {
+      const d = Math.min(devicePixelRatio || 1, 2);
+      o.W = innerWidth; o.H = innerHeight; c.width = o.W * d; c.height = o.H * d;
+      o.x.setTransform(d, 0, 0, d, 0, 0); o.onresize && o.onresize();
+    }
+    addEventListener('resize', r); r();
+    return o;
+  }
+
+  // Game loop with delta time (seconds, capped)
+  function loop(fn) {
+    let last = performance.now();
+    function f(t) { const dt = Math.min(.05, (t - last) / 1000); last = t; fn(dt); requestAnimationFrame(f) }
+    requestAnimationFrame(f);
+  }
+
+  return { beep, getBest, setBest, best, set, overlay, swipe, canvas, loop };
+})();
+
+</script>
+<style>
+#box{position:fixed;inset:60px 0 60px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:22px;padding:0 10px}
+#cat{color:#ffe35a;font-weight:800;letter-spacing:2px}
+.line{display:flex;gap:6px;flex-wrap:wrap;justify-content:center;min-height:52px}
+.line button,.slot{width:clamp(34px,10vw,46px);height:clamp(42px,12vw,52px);border-radius:10px;font:inherit;font-weight:900;font-size:22px;border:0}
+.slot{background:#1d1550;color:#fff;display:flex;align-items:center;justify-content:center;border-bottom:3px solid #3df5ff}
+#pool button{background:#3a2a90;color:#fff;cursor:pointer}#pool button.used{visibility:hidden}
+#ans.ok .slot{background:#13a05a}#ans.no .slot{background:#a01340}
+#act{display:flex;gap:10px}#act button{font:inherit;font-weight:800;padding:10px 18px;border:0;border-radius:999px;background:#2f2080;color:#fff}
+</style></head><body>
+<div class="hud"><span>Score <b id="s">0</b></span><span>Time <b id="t">60</b></span><span>Best <b id="b">0</b></span></div>
+<div id="box"><div id="cat"></div><div class="line" id="ans"></div><div class="line" id="pool"></div>
+<div id="act"><button id="clr">↺ Clear</button><button id="skip">Skip (−3s)</button></div></div>
+<script>
+const WORDS = {
+  ANIMAL: ['TIGER', 'HORSE', 'SNAKE', 'PANDA', 'EAGLE', 'SHEEP', 'MOUSE', 'WHALE', 'CAMEL', 'LION', 'FROG', 'GOAT', 'DUCK', 'BEAR', 'SHARK', 'RABBIT', 'MONKEY', 'TURTLE', 'DONKEY', 'PARROT'],
+  FOOD: ['BREAD', 'RICE', 'PIZZA', 'APPLE', 'MANGO', 'LEMON', 'HONEY', 'CHEESE', 'BURGER', 'NOODLE', 'BANANA', 'SUGAR', 'SALAD', 'GRAPE', 'PASTA', 'TOMATO', 'POTATO', 'ONION'],
+  HOME: ['CHAIR', 'TABLE', 'CLOCK', 'SOFA', 'LAMP', 'DOOR', 'SPOON', 'PLATE', 'PILLOW', 'MIRROR', 'WINDOW', 'BUCKET', 'TOWEL', 'BLANKET', 'KETTLE'],
+  NATURE: ['RIVER', 'OCEAN', 'CLOUD', 'STORM', 'FOREST', 'DESERT', 'ISLAND', 'FLOWER', 'PLANET', 'WATER', 'STONE', 'SUNSET', 'RAIN', 'SNOW', 'WIND'],
+  SPORT: ['TENNIS', 'CRICKET', 'SOCCER', 'HOCKEY', 'BOXING', 'GOLF', 'RUGBY', 'SKIING', 'KARATE', 'ROWING', 'SURFING', 'DIVING'],
+};
+let word, pool, picks, score = 0, time = 0, run = false, busy = false;
+G.set('b', G.best('scramble'));
+function next() {
+  const cats = Object.keys(WORDS), cat = cats[Math.random() * cats.length | 0], list = WORDS[cat].filter(w => w.length <= 4 + Math.min(score, 4) / 2 + 2);
+  word = list[Math.random() * list.length | 0];
+  do { pool = word.split('').sort(() => Math.random() - .5) } while (pool.join('') === word);
+  picks = []; busy = false; G.set('cat', cat); render();
+}
+function render() {
+  const ans = document.getElementById('ans'); ans.className = 'line';
+  ans.innerHTML = word.split('').map((_, i) => `<div class="slot">${picks[i] != null ? pool[picks[i]] : ''}</div>`).join('');
+  const p = document.getElementById('pool'); p.innerHTML = '';
+  pool.forEach((ch, i) => { const b = document.createElement('button'); b.textContent = ch; if (picks.includes(i)) b.className = 'used'; b.onclick = () => tap(i); p.appendChild(b) });
+}
+function tap(i) {
+  if (!run || busy || picks.includes(i)) return; picks.push(i); G.beep(400 + picks.length * 50, .04, 'triangle'); render();
+  if (picks.length === word.length) {
+    const guess = picks.map(k => pool[k]).join(''), ans = document.getElementById('ans'); busy = true;
+    if (guess === word) { ans.classList.add('ok'); score++; time += 3; G.set('s', score); G.beep(900, .15, 'triangle'); setTimeout(next, 500) }
+    else { ans.classList.add('no'); G.beep(150, .2, 'sawtooth'); setTimeout(() => { picks = []; busy = false; render() }, 500) }
+  }
+}
+document.getElementById('clr').onclick = () => { if (!busy) { picks = []; render() } };
+document.getElementById('skip').onclick = () => { if (run && !busy) { time -= 3; G.beep(250, .1, 'square', .05); next() } };
+addEventListener('keydown', e => { const L = e.key.toUpperCase(); if (e.key === 'Backspace') { picks.pop(); render(); return } const i = pool ? pool.findIndex((ch, k) => ch === L && !picks.includes(k)) : -1; if (i >= 0) tap(i) });
+function start() { score = 0; time = 60; run = true; G.set('s', 0); next() }
+G.loop(dt => {
+  if (!run) return; time -= dt; G.set('t', Math.max(0, Math.ceil(time)));
+  if (time <= 0) { run = false; G.set('b', G.best('scramble', score)); G.overlay("Time's up!", 'You unscrambled ' + score + ' words.<br>The last word was <b>' + word + '</b>.', 'Play again', start) }
+});
+G.overlay('Word Scramble', 'The letters of a word are mixed up.<br>Tap them in the right order to spell the word.<br>Each correct word = +3 seconds. You start with 60.', 'Start', start);
+</script></body></html>

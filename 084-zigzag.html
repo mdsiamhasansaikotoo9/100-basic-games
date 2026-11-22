@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>ZigZag</title><script>
+// Shared helpers for every arcade game
+const G = (() => {
+  const st = document.createElement('style');
+  st.textContent = `
+html,body{margin:0;height:100%;background:#0b0820;color:#fff;font-family:system-ui,-apple-system,sans-serif;overflow:hidden;
+  touch-action:none;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
+.hud{position:fixed;top:12px;left:0;right:0;display:flex;justify-content:space-between;padding:0 18px;font-weight:700;
+  letter-spacing:1px;z-index:5;pointer-events:none;color:#cfe8ff}
+.hud b{color:#fff;font-size:20px;text-shadow:0 0 10px #3df5ff}
+.ov{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  background:rgba(8,5,25,.85);z-index:10;text-align:center;padding:20px}
+.ov h1{margin:0 0 10px;font-size:clamp(30px,8vw,52px);background:linear-gradient(90deg,#3df5ff,#ff3df0);
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.ov p{opacity:.88;line-height:1.6;max-width:340px;margin:6px 0}
+.ov button{margin-top:18px;font:inherit;font-weight:800;font-size:18px;padding:13px 34px;border:0;border-radius:999px;
+  background:linear-gradient(90deg,#3df5ff,#ff3df0);color:#0b0820;cursor:pointer}
+`;
+  document.head.appendChild(st);
+
+  let ac;
+  function beep(f, d = .08, type = 'sine', v = .1) {
+    try {
+      ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.type = type; o.frequency.value = f;
+      g.gain.setValueAtTime(v, ac.currentTime);
+      g.gain.exponentialRampToValueAtTime(.001, ac.currentTime + d);
+      o.connect(g).connect(ac.destination); o.start(); o.stop(ac.currentTime + d);
+    } catch (e) {}
+  }
+  function getBest(k) { try { return +localStorage.getItem('arc_' + k) || 0 } catch (e) { return 0 } }
+  function setBest(k, v) { try { localStorage.setItem('arc_' + k, v) } catch (e) {} }
+  // Save if higher (or lower when lowerIsBetter). Returns current best.
+  function best(k, v, lowerIsBetter) {
+    const b = getBest(k);
+    if (v != null && (!b || (lowerIsBetter ? v < b : v > b))) { setBest(k, v); return v }
+    return b;
+  }
+  function set(id, v) { const e = document.getElementById(id); if (e) e.textContent = v }
+
+  function overlay(title, html, btn, cb) {
+    let o = document.querySelector('.ov');
+    if (!o) { o = document.createElement('div'); o.className = 'ov'; document.body.appendChild(o) }
+    o.innerHTML = `<h1>${title}</h1><p>${html}</p><button>${btn}</button>`;
+    o.style.display = 'flex';
+    o.addEventListener('pointerdown', e => e.stopPropagation());
+    o.querySelector('button').onclick = e => { e.stopPropagation(); o.style.display = 'none'; beep(440, .08, 'triangle'); cb() };
+  }
+
+  // Swipe (touch/mouse) + arrow keys / WASD → 'L','R','U','D'
+  function swipe(cb) {
+    let sx = null, sy = null;
+    addEventListener('pointerdown', e => { sx = e.clientX; sy = e.clientY });
+    addEventListener('pointerup', e => {
+      if (sx == null) return;
+      const dx = e.clientX - sx, dy = e.clientY - sy; sx = null;
+      if (Math.max(Math.abs(dx), Math.abs(dy)) < 20) return;
+      cb(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'R' : 'L') : (dy > 0 ? 'D' : 'U'));
+    });
+    addEventListener('keydown', e => {
+      const m = { ArrowLeft: 'L', ArrowRight: 'R', ArrowUp: 'U', ArrowDown: 'D', a: 'L', d: 'R', w: 'U', s: 'D' }[e.key];
+      if (m) { e.preventDefault(); cb(m) }
+    });
+  }
+
+  // Full-screen crisp canvas. Returns {c, x, W, H}; set .onresize to react.
+  function canvas() {
+    const c = document.createElement('canvas');
+    c.style.cssText = 'display:block;width:100vw;height:100vh';
+    document.body.prepend(c);
+    const o = { c, x: c.getContext('2d'), W: 0, H: 0 };
+    function r() {
+      const d = Math.min(devicePixelRatio || 1, 2);
+      o.W = innerWidth; o.H = innerHeight; c.width = o.W * d; c.height = o.H * d;
+      o.x.setTransform(d, 0, 0, d, 0, 0); o.onresize && o.onresize();
+    }
+    addEventListener('resize', r); r();
+    return o;
+  }
+
+  // Game loop with delta time (seconds, capped)
+  function loop(fn) {
+    let last = performance.now();
+    function f(t) { const dt = Math.min(.05, (t - last) / 1000); last = t; fn(dt); requestAnimationFrame(f) }
+    requestAnimationFrame(f);
+  }
+
+  return { beep, getBest, setBest, best, set, overlay, swipe, canvas, loop };
+})();
+
+</script></head><body>
+<div class="hud"><span>Score <b id="s">0</b></span><span>Best <b id="b">0</b></span></div>
+<script>
+const K = G.canvas(), x = K.x;
+let path = [], set = new Set(), gems = new Set(), ball = null, dir = 0, run = false, score = 0, sp = 3, end, falling = 0, tiles = 0, cam = { x: 0, y: 0 }, t = 0;
+G.set('b', G.best('zigzag'));
+const S = () => Math.min(K.W, K.H) * .085; // tile size
+// grid: dir 0 = "up" (gy-1), dir 1 = "right" (gx+1). screen: X=(gx-gy)*S*.71, Y=(gx+gy)*S*.71*-0... we map to iso
+const iso = (gx, gy) => ({ X: (gx + gy) * S() * .7, Y: -(gx - gy) * S() * .4 });
+function extend() { while (path.length < 120) { const last = path[path.length - 1]; const run2 = 1 + (Math.random() * 4 | 0); let d = Math.random() < .5 ? 0 : 1; for (let k = 0; k < run2; k++) { const n = d ? [last[0] + 1, last[1]] : [last[0], last[1] - 1]; path.push(n); set.add(n + ''); if (Math.random() < .08) gems.add(n + ''); } } }
+function start() { path = [[0, 0]]; set = new Set(['0,0']); gems = new Set(); for (let i = 1; i < 6; i++) { path.push([0, -i]); set.add('0,' + (-i)) } extend(); ball = { gx: .5, gy: .5 }; dir = 0; sp = 3; score = 0; falling = 0; run = true; G.set('s', 0) }
+function tap() { if (!run || falling) return; dir ^= 1; score++; G.set('s', score); G.beep(dir ? 600 : 500, .03, 'triangle', .05) }
+addEventListener('pointerdown', tap); addEventListener('keydown', e => { if (e.code === 'Space') { e.preventDefault(); tap() } });
+G.loop(dt => {
+  t += dt;
+  if (run) {
+    if (falling) { falling += dt; if (falling > .8) { run = false; G.set('b', G.best('zigzag', score)); G.overlay('Fell off!', 'Score: ' + score, 'Play again', start) } }
+    else {
+      sp = Math.min(7, 3 + score * .03); if (dir) ball.gx += sp * dt; else ball.gy -= sp * dt;
+      const key = Math.floor(ball.gx) + ',' + Math.floor(ball.gy);
+      if (!set.has(key)) { falling = .001; G.beep(120, .5, 'sawtooth') }
+      if (gems.has(key)) { gems.delete(key); score += 3; G.set('s', score); G.beep(1200, .1, 'triangle') }
+      while (path.length && (path[0][0] < Math.floor(ball.gx) - 6 || path[0][1] > Math.floor(ball.gy) + 6)) { set.delete(path[0] + ''); path.shift() }
+      extend();
+    }
+  }
+  x.fillStyle = '#1a3a6a'; x.fillRect(0, 0, K.W, K.H); if (!ball) return;
+  const bp = iso(ball.gx, ball.gy); cam.x += (bp.X - cam.x) * Math.min(1, dt * 6); cam.y += (bp.Y - cam.y) * Math.min(1, dt * 6);
+  const ox = K.W / 2 - cam.x, oy = K.H * .62 - cam.y, s = S();
+  // draw tiles from far to near (larger gx-gy later)
+  const sorted = path.slice().sort((a, b) => (b[0] - b[1]) - (a[0] - a[1]));
+  for (const [gx, gy] of sorted) {
+    const p = (a, b) => { const q = iso(a, b); return [ox + q.X, oy + q.Y] };
+    const A = p(gx, gy), B = p(gx + 1, gy), C = p(gx + 1, gy + 1), D = p(gx, gy + 1);
+    const hue = (gx - gy) * 2 % 360;
+    x.fillStyle = `hsl(${190 + hue % 60},70%,70%)`; x.beginPath(); x.moveTo(...A); x.lineTo(...B); x.lineTo(...C); x.lineTo(...D); x.fill();
+    x.fillStyle = `hsl(${190 + hue % 60},60%,40%)`; x.beginPath(); x.moveTo(...A); x.lineTo(...D); x.lineTo(D[0], D[1] + s * 1.2); x.lineTo(A[0], A[1] + s * 1.2); x.fill();
+    x.fillStyle = `hsl(${190 + hue % 60},55%,30%)`; x.beginPath(); x.moveTo(...C); x.lineTo(...D); x.lineTo(D[0], D[1] + s * 1.2); x.lineTo(C[0], C[1] + s * 1.2); x.fill();
+    if (gems.has(gx + ',' + gy)) { const m = p(gx + .5, gy + .5); x.fillStyle = '#ff3df0'; x.shadowColor = '#ff3df0'; x.shadowBlur = 12; x.beginPath(); x.moveTo(m[0], m[1] - 14 + Math.sin(t * 4) * 3); x.lineTo(m[0] + 7, m[1] - 6); x.lineTo(m[0], m[1] + 2); x.lineTo(m[0] - 7, m[1] - 6); x.fill(); x.shadowBlur = 0 }
+  }
+  const bpp = iso(ball.gx, ball.gy); x.fillStyle = '#ffe35a'; x.shadowColor = '#ffe35a'; x.shadowBlur = 14; x.beginPath(); x.arc(ox + bpp.X, oy + bpp.Y - s * .35 + falling * falling * 600, s * .3, 0, 7); x.fill(); x.shadowBlur = 0;
+});
+G.overlay('ZigZag', 'The ball rolls by itself.<br>Tap (or Space) to switch direction and stay on the path.<br>Grab pink gems for +3. It gets faster!', 'Start', start);
+</script></body></html>

@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Coin Runner</title><script>
+// Shared helpers for every arcade game
+const G = (() => {
+  const st = document.createElement('style');
+  st.textContent = `
+html,body{margin:0;height:100%;background:#0b0820;color:#fff;font-family:system-ui,-apple-system,sans-serif;overflow:hidden;
+  touch-action:none;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
+.hud{position:fixed;top:12px;left:0;right:0;display:flex;justify-content:space-between;padding:0 18px;font-weight:700;
+  letter-spacing:1px;z-index:5;pointer-events:none;color:#cfe8ff}
+.hud b{color:#fff;font-size:20px;text-shadow:0 0 10px #3df5ff}
+.ov{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  background:rgba(8,5,25,.85);z-index:10;text-align:center;padding:20px}
+.ov h1{margin:0 0 10px;font-size:clamp(30px,8vw,52px);background:linear-gradient(90deg,#3df5ff,#ff3df0);
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.ov p{opacity:.88;line-height:1.6;max-width:340px;margin:6px 0}
+.ov button{margin-top:18px;font:inherit;font-weight:800;font-size:18px;padding:13px 34px;border:0;border-radius:999px;
+  background:linear-gradient(90deg,#3df5ff,#ff3df0);color:#0b0820;cursor:pointer}
+`;
+  document.head.appendChild(st);
+
+  let ac;
+  function beep(f, d = .08, type = 'sine', v = .1) {
+    try {
+      ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.type = type; o.frequency.value = f;
+      g.gain.setValueAtTime(v, ac.currentTime);
+      g.gain.exponentialRampToValueAtTime(.001, ac.currentTime + d);
+      o.connect(g).connect(ac.destination); o.start(); o.stop(ac.currentTime + d);
+    } catch (e) {}
+  }
+  function getBest(k) { try { return +localStorage.getItem('arc_' + k) || 0 } catch (e) { return 0 } }
+  function setBest(k, v) { try { localStorage.setItem('arc_' + k, v) } catch (e) {} }
+  // Save if higher (or lower when lowerIsBetter). Returns current best.
+  function best(k, v, lowerIsBetter) {
+    const b = getBest(k);
+    if (v != null && (!b || (lowerIsBetter ? v < b : v > b))) { setBest(k, v); return v }
+    return b;
+  }
+  function set(id, v) { const e = document.getElementById(id); if (e) e.textContent = v }
+
+  function overlay(title, html, btn, cb) {
+    let o = document.querySelector('.ov');
+    if (!o) { o = document.createElement('div'); o.className = 'ov'; document.body.appendChild(o) }
+    o.innerHTML = `<h1>${title}</h1><p>${html}</p><button>${btn}</button>`;
+    o.style.display = 'flex';
+    o.addEventListener('pointerdown', e => e.stopPropagation());
+    o.querySelector('button').onclick = e => { e.stopPropagation(); o.style.display = 'none'; beep(440, .08, 'triangle'); cb() };
+  }
+
+  // Swipe (touch/mouse) + arrow keys / WASD → 'L','R','U','D'
+  function swipe(cb) {
+    let sx = null, sy = null;
+    addEventListener('pointerdown', e => { sx = e.clientX; sy = e.clientY });
+    addEventListener('pointerup', e => {
+      if (sx == null) return;
+      const dx = e.clientX - sx, dy = e.clientY - sy; sx = null;
+      if (Math.max(Math.abs(dx), Math.abs(dy)) < 20) return;
+      cb(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'R' : 'L') : (dy > 0 ? 'D' : 'U'));
+    });
+    addEventListener('keydown', e => {
+      const m = { ArrowLeft: 'L', ArrowRight: 'R', ArrowUp: 'U', ArrowDown: 'D', a: 'L', d: 'R', w: 'U', s: 'D' }[e.key];
+      if (m) { e.preventDefault(); cb(m) }
+    });
+  }
+
+  // Full-screen crisp canvas. Returns {c, x, W, H}; set .onresize to react.
+  function canvas() {
+    const c = document.createElement('canvas');
+    c.style.cssText = 'display:block;width:100vw;height:100vh';
+    document.body.prepend(c);
+    const o = { c, x: c.getContext('2d'), W: 0, H: 0 };
+    function r() {
+      const d = Math.min(devicePixelRatio || 1, 2);
+      o.W = innerWidth; o.H = innerHeight; c.width = o.W * d; c.height = o.H * d;
+      o.x.setTransform(d, 0, 0, d, 0, 0); o.onresize && o.onresize();
+    }
+    addEventListener('resize', r); r();
+    return o;
+  }
+
+  // Game loop with delta time (seconds, capped)
+  function loop(fn) {
+    let last = performance.now();
+    function f(t) { const dt = Math.min(.05, (t - last) / 1000); last = t; fn(dt); requestAnimationFrame(f) }
+    requestAnimationFrame(f);
+  }
+
+  return { beep, getBest, setBest, best, set, overlay, swipe, canvas, loop };
+})();
+
+</script></head><body>
+<div class="hud"><span>Coins <b id="s">0</b></span><span>Distance <b id="d">0</b></span><span>Best <b id="b">0</b></span></div>
+<script>
+const K = G.canvas(), x = K.x, PW = 26, PH = 34;
+let plats = [], coins = [], pl = null, cam = 0, run = false, score = 0, jumps = 0, t = 0, sparks = [], lastX = 0;
+G.set('b', G.best('coinrun'));
+const GY = () => K.H * .75;
+function addChunk() {
+  const sp = Math.min(1, cam / 8000), gap = 60 + Math.random() * (60 + sp * 80), w = 120 + Math.random() * 260 - sp * 60;
+  const x0 = lastX + gap, y = Math.max(K.H * .45, Math.min(K.H * .85, (plats.length ? plats[plats.length - 1].y : GY()) + (Math.random() - .5) * 120));
+  plats.push({ x: x0, y, w: Math.max(80, w) });
+  const n = Math.floor(w / 40); for (let i = 0; i < n; i++) if (Math.random() < .6) coins.push({ x: x0 + 20 + i * 40, y: y - 40 - (Math.random() < .3 ? 60 : 0) });
+  if (Math.random() < .35) { const px = x0 + w + gap / 2 - 40; coins.push({ x: px + 40, y: y - 120 }) }
+  if (Math.random() < .3 && w > 160) { const fy = y - 110 - Math.random() * 40, fx = x0 + w * .3; plats.push({ x: fx, y: fy, w: 90, float: 1 }); coins.push({ x: fx + 45, y: fy - 30 }) }
+  lastX = x0 + Math.max(80, w);
+}
+function start() { plats = [{ x: -100, y: GY(), w: 600 }]; coins = []; lastX = 500; cam = 0; score = 0; t = 0; while (lastX < K.W * 3) addChunk(); pl = { x: 80, y: GY() - PH, vy: 0, ground: true }; jumps = 0; run = true; G.set('s', 0) }
+function jump() { if (!run) return; if (pl.ground || jumps < 2) { pl.vy = -K.H * (jumps ? .95 : 1.1); pl.ground = false; jumps++; G.beep(jumps > 1 ? 800 : 600, .06, 'triangle', .06) } }
+addEventListener('pointerdown', jump); addEventListener('keydown', e => { if (e.code === 'Space' || e.key === 'ArrowUp') { e.preventDefault(); jump() } });
+G.loop(dt => {
+  t += dt; for (const s of sparks) { s.y -= 60 * dt; s.life -= dt * 2 } sparks = sparks.filter(s => s.life > 0);
+  if (run) {
+    const sp = 230 + Math.min(cam / 40, 220); pl.x += sp * dt; cam = pl.x - K.W * .25;
+    const prevBottom = pl.y + PH; pl.vy += K.H * 2.8 * dt; pl.y += pl.vy * dt; pl.ground = false;
+    for (const p of plats) if (pl.x + PW > p.x && pl.x < p.x + p.w && pl.vy >= 0 && prevBottom <= p.y + 2 && pl.y + PH >= p.y) { pl.y = p.y - PH; pl.vy = 0; pl.ground = true; jumps = 0 }
+    for (const p of plats) if (!p.float && pl.x + PW > p.x + 4 && pl.x < p.x && pl.y + PH > p.y + 6) { run = false }
+    for (const c of coins) if (!c.got && Math.abs(c.x - (pl.x + PW / 2)) < 22 && Math.abs(c.y - (pl.y + PH / 2)) < 26) { c.got = 1; score++; G.set('s', score); sparks.push({ x: c.x, y: c.y, life: 1 }); G.beep(1200 + (score % 5) * 80, .05, 'square', .04) }
+    coins = coins.filter(c => !c.got && c.x > cam - 50); plats = plats.filter(p => p.x + p.w > cam - 100);
+    while (lastX < cam + K.W * 2) addChunk();
+    G.set('d', Math.floor(pl.x / 50));
+    if (pl.y > K.H + 50) run = false;
+    if (!run) { G.beep(110, .5, 'sawtooth'); const total = score * 10 + Math.floor(pl.x / 50); G.set('b', G.best('coinrun', total)); G.overlay('Ouch!', 'Coins: ' + score + ' · Distance: ' + Math.floor(pl.x / 50) + '<br>Score: ' + total + ' (coins × 10 + distance)', 'Run again', start) }
+  }
+  const bg = x.createLinearGradient(0, 0, 0, K.H); bg.addColorStop(0, '#2a1a6a'); bg.addColorStop(1, '#ff6a8a'); x.fillStyle = bg; x.fillRect(0, 0, K.W, K.H);
+  x.fillStyle = 'rgba(20,10,50,.5)'; for (let i = -1; i < K.W / 160 + 2; i++) { const mx = i * 160 - (cam * .2 % 160); x.beginPath(); x.moveTo(mx, K.H); x.lineTo(mx + 80, K.H * .5); x.lineTo(mx + 160, K.H); x.fill() }
+  x.save(); x.translate(-cam, 0);
+  for (const p of plats) { x.fillStyle = p.float ? '#b44dff' : '#3a2a1a'; x.fillRect(p.x, p.y, p.w, p.float ? 14 : K.H - p.y); x.fillStyle = p.float ? '#d88dff' : '#4dff88'; x.fillRect(p.x, p.y, p.w, 6) }
+  for (const c of coins) { const sq = Math.abs(Math.sin(t * 4 + c.x)); x.fillStyle = '#ffe35a'; x.shadowColor = '#ffe35a'; x.shadowBlur = 10; x.beginPath(); x.ellipse(c.x, c.y, 10 * Math.max(.2, sq), 10, 0, 0, 7); x.fill(); x.shadowBlur = 0 }
+  if (pl) { const run2 = pl.ground ? Math.sin(t * 20) * 3 : 0; x.fillStyle = '#3df5ff'; x.shadowColor = '#3df5ff'; x.shadowBlur = 12; x.fillRect(pl.x, pl.y, PW, PH - 6); x.shadowBlur = 0; x.fillStyle = '#0b0820'; x.fillRect(pl.x + 16, pl.y + 7, 5, 5); x.fillStyle = '#3df5ff'; x.fillRect(pl.x + 3 + run2, pl.y + PH - 6, 7, 6); x.fillRect(pl.x + 16 - run2, pl.y + PH - 6, 7, 6) }
+  x.restore();
+  x.fillStyle = '#ffe35a'; x.font = '900 16px system-ui'; x.textAlign = 'center'; for (const s of sparks) { x.globalAlpha = s.life; x.fillText('+1', s.x - cam, s.y) } x.globalAlpha = 1;
+});
+G.overlay('Coin Runner', 'You run by yourself. Tap (or Space) to jump.<br>Tap again in the air for a double jump!<br>Grab coins. Don\'t fall in the gaps or run into a wall.', 'Start', start);
+</script></body></html>

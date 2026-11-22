@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Deep Sea Fishing</title><script>
+// Shared helpers for every arcade game
+const G = (() => {
+  const st = document.createElement('style');
+  st.textContent = `
+html,body{margin:0;height:100%;background:#0b0820;color:#fff;font-family:system-ui,-apple-system,sans-serif;overflow:hidden;
+  touch-action:none;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
+.hud{position:fixed;top:12px;left:0;right:0;display:flex;justify-content:space-between;padding:0 18px;font-weight:700;
+  letter-spacing:1px;z-index:5;pointer-events:none;color:#cfe8ff}
+.hud b{color:#fff;font-size:20px;text-shadow:0 0 10px #3df5ff}
+.ov{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  background:rgba(8,5,25,.85);z-index:10;text-align:center;padding:20px}
+.ov h1{margin:0 0 10px;font-size:clamp(30px,8vw,52px);background:linear-gradient(90deg,#3df5ff,#ff3df0);
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.ov p{opacity:.88;line-height:1.6;max-width:340px;margin:6px 0}
+.ov button{margin-top:18px;font:inherit;font-weight:800;font-size:18px;padding:13px 34px;border:0;border-radius:999px;
+  background:linear-gradient(90deg,#3df5ff,#ff3df0);color:#0b0820;cursor:pointer}
+`;
+  document.head.appendChild(st);
+
+  let ac;
+  function beep(f, d = .08, type = 'sine', v = .1) {
+    try {
+      ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.type = type; o.frequency.value = f;
+      g.gain.setValueAtTime(v, ac.currentTime);
+      g.gain.exponentialRampToValueAtTime(.001, ac.currentTime + d);
+      o.connect(g).connect(ac.destination); o.start(); o.stop(ac.currentTime + d);
+    } catch (e) {}
+  }
+  function getBest(k) { try { return +localStorage.getItem('arc_' + k) || 0 } catch (e) { return 0 } }
+  function setBest(k, v) { try { localStorage.setItem('arc_' + k, v) } catch (e) {} }
+  // Save if higher (or lower when lowerIsBetter). Returns current best.
+  function best(k, v, lowerIsBetter) {
+    const b = getBest(k);
+    if (v != null && (!b || (lowerIsBetter ? v < b : v > b))) { setBest(k, v); return v }
+    return b;
+  }
+  function set(id, v) { const e = document.getElementById(id); if (e) e.textContent = v }
+
+  function overlay(title, html, btn, cb) {
+    let o = document.querySelector('.ov');
+    if (!o) { o = document.createElement('div'); o.className = 'ov'; document.body.appendChild(o) }
+    o.innerHTML = `<h1>${title}</h1><p>${html}</p><button>${btn}</button>`;
+    o.style.display = 'flex';
+    o.addEventListener('pointerdown', e => e.stopPropagation());
+    o.querySelector('button').onclick = e => { e.stopPropagation(); o.style.display = 'none'; beep(440, .08, 'triangle'); cb() };
+  }
+
+  // Swipe (touch/mouse) + arrow keys / WASD → 'L','R','U','D'
+  function swipe(cb) {
+    let sx = null, sy = null;
+    addEventListener('pointerdown', e => { sx = e.clientX; sy = e.clientY });
+    addEventListener('pointerup', e => {
+      if (sx == null) return;
+      const dx = e.clientX - sx, dy = e.clientY - sy; sx = null;
+      if (Math.max(Math.abs(dx), Math.abs(dy)) < 20) return;
+      cb(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'R' : 'L') : (dy > 0 ? 'D' : 'U'));
+    });
+    addEventListener('keydown', e => {
+      const m = { ArrowLeft: 'L', ArrowRight: 'R', ArrowUp: 'U', ArrowDown: 'D', a: 'L', d: 'R', w: 'U', s: 'D' }[e.key];
+      if (m) { e.preventDefault(); cb(m) }
+    });
+  }
+
+  // Full-screen crisp canvas. Returns {c, x, W, H}; set .onresize to react.
+  function canvas() {
+    const c = document.createElement('canvas');
+    c.style.cssText = 'display:block;width:100vw;height:100vh';
+    document.body.prepend(c);
+    const o = { c, x: c.getContext('2d'), W: 0, H: 0 };
+    function r() {
+      const d = Math.min(devicePixelRatio || 1, 2);
+      o.W = innerWidth; o.H = innerHeight; c.width = o.W * d; c.height = o.H * d;
+      o.x.setTransform(d, 0, 0, d, 0, 0); o.onresize && o.onresize();
+    }
+    addEventListener('resize', r); r();
+    return o;
+  }
+
+  // Game loop with delta time (seconds, capped)
+  function loop(fn) {
+    let last = performance.now();
+    function f(t) { const dt = Math.min(.05, (t - last) / 1000); last = t; fn(dt); requestAnimationFrame(f) }
+    requestAnimationFrame(f);
+  }
+
+  return { beep, getBest, setBest, best, set, overlay, swipe, canvas, loop };
+})();
+
+</script></head><body>
+<div class="hud"><span>Score <b id="s">0</b></span><span>Time <b id="t">60</b></span><span>Best <b id="b">0</b></span></div>
+<script>
+const K = G.canvas(), x = K.x;
+const TYPES = [{ e: '🐟', v: 5, d: [.25, .5], sp: 60 }, { e: '🐠', v: 10, d: [.35, .65], sp: 80 }, { e: '🐡', v: 15, d: [.5, .8], sp: 50 }, { e: '🦑', v: 25, d: [.65, .9], sp: 90 }, { e: '🦈', v: 50, d: [.75, .95], sp: 140 }, { e: '👢', v: -10, d: [.4, .95], sp: 30 }, { e: '🪼', v: 0, d: [.3, .9], sp: 40, jelly: 1 }];
+let boatX = 0, hook = null, fish = [], score = 0, time = 0, run = false, t = 0, pops = [];
+G.set('b', G.best('fishing'));
+const SURF = () => K.H * .2;
+function start() { boatX = K.W / 2; hook = { y: SURF(), state: 'up', catch: null }; fish = []; score = 0; time = 60; run = true; G.set('s', 0); for (let i = 0; i < 8; i++) addFish(true) }
+function addFish(anywhere) {
+  const roll = Math.random(), T = roll < .3 ? TYPES[0] : roll < .5 ? TYPES[1] : roll < .63 ? TYPES[2] : roll < .73 ? TYPES[3] : roll < .78 ? TYPES[4] : roll < .89 ? TYPES[5] : TYPES[6];
+  const dir = Math.random() < .5 ? 1 : -1, y = SURF() + (K.H - SURF()) * (T.d[0] + Math.random() * (T.d[1] - T.d[0]));
+  fish.push({ ...T, x: anywhere ? Math.random() * K.W : (dir > 0 ? -30 : K.W + 30), y, dir, ph: Math.random() * 7 });
+}
+let dragging = false;
+addEventListener('pointerdown', e => { if (!run) return; dragging = true; boatX = e.clientX; if (hook.state === 'up') hook.state = 'down' });
+addEventListener('pointermove', e => { if (dragging && run && hook.state === 'up') boatX = e.clientX });
+addEventListener('pointerup', () => dragging = false);
+addEventListener('keydown', e => { if (!run) return; if (e.key === 'ArrowLeft') boatX -= 30; if (e.key === 'ArrowRight') boatX += 30; if (e.code === 'Space' && hook.state === 'up') hook.state = 'down' });
+G.loop(dt => {
+  t += dt; for (const p of pops) { p.y -= 40 * dt; p.life -= dt } pops = pops.filter(p => p.life > 0);
+  if (run) {
+    time -= dt; G.set('t', Math.max(0, Math.ceil(time)));
+    boatX = Math.max(30, Math.min(K.W - 30, boatX));
+    if (hook.state === 'down') { hook.y += 340 * dt; if (hook.y > K.H - 30) hook.state = 'reel' }
+    if (hook.state === 'reel') { hook.y -= (hook.catch ? 260 : 420) * dt; if (hook.y <= SURF()) {
+      hook.y = SURF(); hook.state = 'up';
+      if (hook.catch) { const f = hook.catch; score = Math.max(0, score + f.v); G.set('s', score); pops.push({ x: boatX, y: SURF() - 30, t: (f.v > 0 ? '+' : '') + f.v, life: 1.2, good: f.v > 0 }); G.beep(f.v > 0 ? 700 + f.v * 10 : 150, .15, f.v > 0 ? 'triangle' : 'sawtooth'); hook.catch = null; addFish(false) } } }
+    for (const f of fish) {
+      if (f === hook.catch) continue; f.x += f.dir * f.sp * dt; f.ph += dt * 3;
+      if ((f.dir > 0 && f.x > K.W + 40) || (f.dir < 0 && f.x < -40)) { f.dead = 1; addFish(false) }
+      if (hook.state !== 'up' && !hook.catch && Math.hypot(f.x - boatX, f.y + Math.sin(f.ph) * 4 - hook.y) < 22) {
+        if (f.jelly) { hook.state = 'reel'; time -= 3; pops.push({ x: boatX, y: hook.y, t: 'Zap! −3s', life: 1.2 }); G.beep(120, .3, 'sawtooth') }
+        else { hook.catch = f; hook.state = 'reel'; G.beep(500, .06, 'square', .05) }
+      }
+    }
+    fish = fish.filter(f => !f.dead);
+    if (time <= 0) { run = false; G.set('b', G.best('fishing', score)); G.overlay("Time's up! 🎣", 'Score: ' + score, 'Fish again', start) }
+  }
+  const sky = x.createLinearGradient(0, 0, 0, SURF()); sky.addColorStop(0, '#ff8a5a'); sky.addColorStop(1, '#ffd08a'); x.fillStyle = sky; x.fillRect(0, 0, K.W, SURF());
+  const sea = x.createLinearGradient(0, SURF(), 0, K.H); sea.addColorStop(0, '#1a8ad0'); sea.addColorStop(1, '#05203a'); x.fillStyle = sea; x.fillRect(0, SURF(), K.W, K.H);
+  x.fillStyle = 'rgba(255,255,255,.25)'; for (let i = 0; i < K.W; i += 30) x.fillRect(i + Math.sin(t * 2 + i) * 4, SURF() + 2, 14, 2);
+  x.font = '30px system-ui'; x.textAlign = 'center'; x.textBaseline = 'middle';
+  for (const f of fish) { if (f === hook.catch) continue; x.save(); x.translate(f.x, f.y + Math.sin(f.ph) * 4); if (f.dir > 0 && !f.jelly && f.e !== '👢') x.scale(-1, 1); x.fillStyle = '#fff'; x.fillText(f.e, 0, 0); x.restore() }
+  if (hook) {
+    x.font = '40px system-ui'; x.fillText('🚣', boatX, SURF() - 18);
+    x.strokeStyle = '#eee'; x.lineWidth = 1.5; x.beginPath(); x.moveTo(boatX + 14, SURF() - 34); x.lineTo(boatX, hook.y); x.stroke();
+    x.strokeStyle = '#ccc'; x.lineWidth = 2.5; x.beginPath(); x.arc(boatX - 4, hook.y, 5, 0, Math.PI); x.stroke();
+    if (hook.catch) { x.font = '30px system-ui'; x.save(); x.translate(boatX, hook.y + 16); x.rotate(Math.sin(t * 20) * .4); x.fillText(hook.catch.e, 0, 0); x.restore() }
+  }
+  x.font = '900 22px system-ui'; for (const p of pops) { x.globalAlpha = Math.min(1, p.life); x.fillStyle = p.good ? '#ffe35a' : '#ff4d6d'; x.fillText(p.t, p.x, p.y) } x.globalAlpha = 1;
+});
+G.overlay('Deep Sea Fishing', 'Drag to move your boat. Tap to drop the hook.<br>Deeper fish are worth more: 🐟5 🐠10 🐡15 🦑25 🦈50<br>Avoid 👢 boots (−10) and 🪼 jellyfish (−3 seconds). 60 seconds!', 'Start', start);
+</script></body></html>

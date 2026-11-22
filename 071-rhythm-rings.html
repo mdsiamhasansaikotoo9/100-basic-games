@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Rhythm Rings</title><script>
+// Shared helpers for every arcade game
+const G = (() => {
+  const st = document.createElement('style');
+  st.textContent = `
+html,body{margin:0;height:100%;background:#0b0820;color:#fff;font-family:system-ui,-apple-system,sans-serif;overflow:hidden;
+  touch-action:none;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
+.hud{position:fixed;top:12px;left:0;right:0;display:flex;justify-content:space-between;padding:0 18px;font-weight:700;
+  letter-spacing:1px;z-index:5;pointer-events:none;color:#cfe8ff}
+.hud b{color:#fff;font-size:20px;text-shadow:0 0 10px #3df5ff}
+.ov{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  background:rgba(8,5,25,.85);z-index:10;text-align:center;padding:20px}
+.ov h1{margin:0 0 10px;font-size:clamp(30px,8vw,52px);background:linear-gradient(90deg,#3df5ff,#ff3df0);
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.ov p{opacity:.88;line-height:1.6;max-width:340px;margin:6px 0}
+.ov button{margin-top:18px;font:inherit;font-weight:800;font-size:18px;padding:13px 34px;border:0;border-radius:999px;
+  background:linear-gradient(90deg,#3df5ff,#ff3df0);color:#0b0820;cursor:pointer}
+`;
+  document.head.appendChild(st);
+
+  let ac;
+  function beep(f, d = .08, type = 'sine', v = .1) {
+    try {
+      ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.type = type; o.frequency.value = f;
+      g.gain.setValueAtTime(v, ac.currentTime);
+      g.gain.exponentialRampToValueAtTime(.001, ac.currentTime + d);
+      o.connect(g).connect(ac.destination); o.start(); o.stop(ac.currentTime + d);
+    } catch (e) {}
+  }
+  function getBest(k) { try { return +localStorage.getItem('arc_' + k) || 0 } catch (e) { return 0 } }
+  function setBest(k, v) { try { localStorage.setItem('arc_' + k, v) } catch (e) {} }
+  // Save if higher (or lower when lowerIsBetter). Returns current best.
+  function best(k, v, lowerIsBetter) {
+    const b = getBest(k);
+    if (v != null && (!b || (lowerIsBetter ? v < b : v > b))) { setBest(k, v); return v }
+    return b;
+  }
+  function set(id, v) { const e = document.getElementById(id); if (e) e.textContent = v }
+
+  function overlay(title, html, btn, cb) {
+    let o = document.querySelector('.ov');
+    if (!o) { o = document.createElement('div'); o.className = 'ov'; document.body.appendChild(o) }
+    o.innerHTML = `<h1>${title}</h1><p>${html}</p><button>${btn}</button>`;
+    o.style.display = 'flex';
+    o.addEventListener('pointerdown', e => e.stopPropagation());
+    o.querySelector('button').onclick = e => { e.stopPropagation(); o.style.display = 'none'; beep(440, .08, 'triangle'); cb() };
+  }
+
+  // Swipe (touch/mouse) + arrow keys / WASD → 'L','R','U','D'
+  function swipe(cb) {
+    let sx = null, sy = null;
+    addEventListener('pointerdown', e => { sx = e.clientX; sy = e.clientY });
+    addEventListener('pointerup', e => {
+      if (sx == null) return;
+      const dx = e.clientX - sx, dy = e.clientY - sy; sx = null;
+      if (Math.max(Math.abs(dx), Math.abs(dy)) < 20) return;
+      cb(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'R' : 'L') : (dy > 0 ? 'D' : 'U'));
+    });
+    addEventListener('keydown', e => {
+      const m = { ArrowLeft: 'L', ArrowRight: 'R', ArrowUp: 'U', ArrowDown: 'D', a: 'L', d: 'R', w: 'U', s: 'D' }[e.key];
+      if (m) { e.preventDefault(); cb(m) }
+    });
+  }
+
+  // Full-screen crisp canvas. Returns {c, x, W, H}; set .onresize to react.
+  function canvas() {
+    const c = document.createElement('canvas');
+    c.style.cssText = 'display:block;width:100vw;height:100vh';
+    document.body.prepend(c);
+    const o = { c, x: c.getContext('2d'), W: 0, H: 0 };
+    function r() {
+      const d = Math.min(devicePixelRatio || 1, 2);
+      o.W = innerWidth; o.H = innerHeight; c.width = o.W * d; c.height = o.H * d;
+      o.x.setTransform(d, 0, 0, d, 0, 0); o.onresize && o.onresize();
+    }
+    addEventListener('resize', r); r();
+    return o;
+  }
+
+  // Game loop with delta time (seconds, capped)
+  function loop(fn) {
+    let last = performance.now();
+    function f(t) { const dt = Math.min(.05, (t - last) / 1000); last = t; fn(dt); requestAnimationFrame(f) }
+    requestAnimationFrame(f);
+  }
+
+  return { beep, getBest, setBest, best, set, overlay, swipe, canvas, loop };
+})();
+
+</script></head><body>
+<div class="hud"><span>Score <b id="s">0</b></span><span>Combo <b id="c">0</b></span><span>Best <b id="b">0</b></span></div>
+<script>
+const K = G.canvas(), x = K.x, NOTES = [262, 330, 392, 523, 392, 330, 294, 349, 440, 587, 440, 349];
+let circles = [], fx = [], score = 0, combo = 0, misses = 0, run = false, t = 0, beat = 0, ni = 0, bpm = 90, num = 0;
+G.set('b', G.best('rhythm'));
+const R = () => Math.min(K.W, K.H) * .085, APPROACH = () => Math.max(.7, 1.3 - t * .006);
+function start() { circles = []; fx = []; score = 0; combo = 0; misses = 0; t = 0; beat = .8; ni = 0; num = 0; bpm = 90; run = true; G.set('s', 0); G.set('c', 0) }
+function spawn() {
+  const r = R(); let px, py, tries = 0;
+  do { px = r * 1.5 + Math.random() * (K.W - r * 3); py = 90 + r + Math.random() * (K.H - 200 - r * 2); tries++ } while (tries < 20 && circles.some(c => Math.hypot(c.x - px, c.y - py) < r * 2.5));
+  num = num % 9 + 1; circles.push({ x: px, y: py, born: t, hit: 0, n: num, hue: (t * 40) % 360 });
+}
+function judge(c, ok) { fx.push({ x: c.x, y: c.y, txt: ok, life: 1, r: R() }) }
+addEventListener('pointerdown', e => {
+  if (!run) return; const r = R();
+  const c = circles.filter(c => !c.hit && Math.hypot(c.x - e.clientX, c.y - e.clientY) < r * 1.2).sort((a, b) => a.born - b.born)[0]; if (!c) return;
+  const off = Math.abs(t - (c.born + APPROACH()));
+  if (off > .45) return;
+  c.hit = 1; let pts, label;
+  if (off < .09) { pts = 300; label = 'PERFECT' } else if (off < .2) { pts = 100; label = 'GOOD' } else { pts = 50; label = 'OK' }
+  combo++; score += pts * (1 + Math.floor(combo / 10)); G.set('s', score); G.set('c', combo); judge(c, label);
+  G.beep(NOTES[ni++ % NOTES.length], .18, 'triangle', .14);
+});
+G.loop(dt => {
+  for (const f of fx) { f.life -= dt * 2; f.r += 60 * dt } fx = fx.filter(f => f.life > 0);
+  if (run) {
+    t += dt; beat -= dt; bpm = Math.min(170, 90 + t * 1.2);
+    if (beat <= 0) { spawn(); beat = 60 / bpm * (Math.random() < .25 ? .5 : 1) }
+    for (const c of circles) if (!c.hit && t > c.born + APPROACH() + .45) { c.hit = 2; combo = 0; misses++; G.set('c', 0); judge(c, 'MISS'); G.beep(120, .12, 'sawtooth', .06) }
+    circles = circles.filter(c => !c.hit);
+    if (misses >= 10) { run = false; circles = []; G.set('b', G.best('rhythm', score)); G.overlay('Out of rhythm!', 'Score: ' + score + '<br>(10 misses ends the song)', 'Play again', start) }
+  }
+  x.fillStyle = '#0b0820'; x.fillRect(0, 0, K.W, K.H);
+  const r = R();
+  for (const c of [...circles].reverse()) {
+    const p = Math.min(1, (t - c.born) / APPROACH()), col = `hsl(${c.hue},90%,60%)`;
+    x.globalAlpha = Math.min(1, (t - c.born) * 4);
+    x.fillStyle = col; x.shadowColor = col; x.shadowBlur = 14; x.beginPath(); x.arc(c.x, c.y, r, 0, 7); x.fill(); x.shadowBlur = 0;
+    x.strokeStyle = '#fff'; x.lineWidth = 3; x.beginPath(); x.arc(c.x, c.y, r, 0, 7); x.stroke();
+    x.fillStyle = '#fff'; x.font = `900 ${r * .9}px system-ui`; x.textAlign = 'center'; x.textBaseline = 'middle'; x.fillText(c.n, c.x, c.y + 2);
+    x.strokeStyle = col; x.lineWidth = 3; x.beginPath(); x.arc(c.x, c.y, r * (1 + 2.2 * (1 - p)), 0, 7); x.stroke();
+    x.globalAlpha = 1;
+  }
+  for (const f of fx) { x.globalAlpha = f.life; x.fillStyle = f.txt === 'MISS' ? '#ff4d6d' : f.txt === 'PERFECT' ? '#ffe35a' : '#4dff88'; x.font = '900 20px system-ui'; x.textAlign = 'center'; x.fillText(f.txt, f.x, f.y - 6); if (f.txt !== 'MISS') { x.strokeStyle = x.fillStyle; x.lineWidth = 2; x.beginPath(); x.arc(f.x, f.y, f.r, 0, 7); x.stroke() } } x.globalAlpha = 1;
+  if (run) { x.fillStyle = 'rgba(255,77,109,.8)'; for (let i = 0; i < 10; i++) { x.globalAlpha = i < misses ? 1 : .2; x.fillRect(K.W / 2 - 75 + i * 15, K.H - 70, 11, 6) } x.globalAlpha = 1 }
+});
+G.overlay('Rhythm Rings', 'Circles appear with a shrinking ring around them.<br>Tap each circle right when the ring touches its edge.<br>Perfect timing = 300 points. 10 misses ends the song.', 'Start', start);
+</script></body></html>

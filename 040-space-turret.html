@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Space Turret</title><script>
+// Shared helpers for every arcade game
+const G = (() => {
+  const st = document.createElement('style');
+  st.textContent = `
+html,body{margin:0;height:100%;background:#0b0820;color:#fff;font-family:system-ui,-apple-system,sans-serif;overflow:hidden;
+  touch-action:none;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
+.hud{position:fixed;top:12px;left:0;right:0;display:flex;justify-content:space-between;padding:0 18px;font-weight:700;
+  letter-spacing:1px;z-index:5;pointer-events:none;color:#cfe8ff}
+.hud b{color:#fff;font-size:20px;text-shadow:0 0 10px #3df5ff}
+.ov{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  background:rgba(8,5,25,.85);z-index:10;text-align:center;padding:20px}
+.ov h1{margin:0 0 10px;font-size:clamp(30px,8vw,52px);background:linear-gradient(90deg,#3df5ff,#ff3df0);
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.ov p{opacity:.88;line-height:1.6;max-width:340px;margin:6px 0}
+.ov button{margin-top:18px;font:inherit;font-weight:800;font-size:18px;padding:13px 34px;border:0;border-radius:999px;
+  background:linear-gradient(90deg,#3df5ff,#ff3df0);color:#0b0820;cursor:pointer}
+`;
+  document.head.appendChild(st);
+
+  let ac;
+  function beep(f, d = .08, type = 'sine', v = .1) {
+    try {
+      ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.type = type; o.frequency.value = f;
+      g.gain.setValueAtTime(v, ac.currentTime);
+      g.gain.exponentialRampToValueAtTime(.001, ac.currentTime + d);
+      o.connect(g).connect(ac.destination); o.start(); o.stop(ac.currentTime + d);
+    } catch (e) {}
+  }
+  function getBest(k) { try { return +localStorage.getItem('arc_' + k) || 0 } catch (e) { return 0 } }
+  function setBest(k, v) { try { localStorage.setItem('arc_' + k, v) } catch (e) {} }
+  // Save if higher (or lower when lowerIsBetter). Returns current best.
+  function best(k, v, lowerIsBetter) {
+    const b = getBest(k);
+    if (v != null && (!b || (lowerIsBetter ? v < b : v > b))) { setBest(k, v); return v }
+    return b;
+  }
+  function set(id, v) { const e = document.getElementById(id); if (e) e.textContent = v }
+
+  function overlay(title, html, btn, cb) {
+    let o = document.querySelector('.ov');
+    if (!o) { o = document.createElement('div'); o.className = 'ov'; document.body.appendChild(o) }
+    o.innerHTML = `<h1>${title}</h1><p>${html}</p><button>${btn}</button>`;
+    o.style.display = 'flex';
+    o.addEventListener('pointerdown', e => e.stopPropagation());
+    o.querySelector('button').onclick = e => { e.stopPropagation(); o.style.display = 'none'; beep(440, .08, 'triangle'); cb() };
+  }
+
+  // Swipe (touch/mouse) + arrow keys / WASD → 'L','R','U','D'
+  function swipe(cb) {
+    let sx = null, sy = null;
+    addEventListener('pointerdown', e => { sx = e.clientX; sy = e.clientY });
+    addEventListener('pointerup', e => {
+      if (sx == null) return;
+      const dx = e.clientX - sx, dy = e.clientY - sy; sx = null;
+      if (Math.max(Math.abs(dx), Math.abs(dy)) < 20) return;
+      cb(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'R' : 'L') : (dy > 0 ? 'D' : 'U'));
+    });
+    addEventListener('keydown', e => {
+      const m = { ArrowLeft: 'L', ArrowRight: 'R', ArrowUp: 'U', ArrowDown: 'D', a: 'L', d: 'R', w: 'U', s: 'D' }[e.key];
+      if (m) { e.preventDefault(); cb(m) }
+    });
+  }
+
+  // Full-screen crisp canvas. Returns {c, x, W, H}; set .onresize to react.
+  function canvas() {
+    const c = document.createElement('canvas');
+    c.style.cssText = 'display:block;width:100vw;height:100vh';
+    document.body.prepend(c);
+    const o = { c, x: c.getContext('2d'), W: 0, H: 0 };
+    function r() {
+      const d = Math.min(devicePixelRatio || 1, 2);
+      o.W = innerWidth; o.H = innerHeight; c.width = o.W * d; c.height = o.H * d;
+      o.x.setTransform(d, 0, 0, d, 0, 0); o.onresize && o.onresize();
+    }
+    addEventListener('resize', r); r();
+    return o;
+  }
+
+  // Game loop with delta time (seconds, capped)
+  function loop(fn) {
+    let last = performance.now();
+    function f(t) { const dt = Math.min(.05, (t - last) / 1000); last = t; fn(dt); requestAnimationFrame(f) }
+    requestAnimationFrame(f);
+  }
+
+  return { beep, getBest, setBest, best, set, overlay, swipe, canvas, loop };
+})();
+
+</script></head><body>
+<div class="hud"><span>Score <b id="s">0</b></span><span id="l">🛡️🛡️🛡️</span><span>Best <b id="b">0</b></span></div>
+<script>
+const K = G.canvas(), x = K.x;
+let ang = -Math.PI / 2, aim = null, rocks = [], shots = [], parts = [], score = 0, hp = 3, run = false, t = 0, spawn = 0, fireT = 0, hurt = 0;
+G.set('b', G.best('turret'));
+const C = () => ({ x: K.W / 2, y: K.H / 2 + 10 });
+function start() { rocks = []; shots = []; score = 0; hp = 3; t = 0; spawn = 1; run = true; G.set('s', 0); G.set('l', '🛡️🛡️🛡️') }
+const setAim = e => aim = { x: e.clientX, y: e.clientY };
+addEventListener('pointerdown', setAim); addEventListener('pointermove', e => { if (aim) setAim(e) });
+addEventListener('pointerup', () => aim = null);
+function rock(r, px, py) {
+  const c = C(); if (px == null) { const a = Math.random() * 7, d = Math.hypot(K.W, K.H) / 2 + 40; px = c.x + Math.cos(a) * d; py = c.y + Math.sin(a) * d }
+  const to = Math.atan2(c.y - py, c.x - px) + (Math.random() - .5) * .6, sp = 40 + Math.random() * 30 + t * 1.2 + (40 - r);
+  const pts = [...Array(9)].map(() => .75 + Math.random() * .35);
+  rocks.push({ x: px, y: py, vx: Math.cos(to) * sp, vy: Math.sin(to) * sp, r, rot: 0, vr: (Math.random() - .5) * 2, pts });
+}
+function boom(px, py, col, n) { for (let i = 0; i < n; i++) { const a = Math.random() * 7, v = Math.random() * 200; parts.push({ x: px, y: py, vx: Math.cos(a) * v, vy: Math.sin(a) * v, life: 1, col }) } }
+G.loop(dt => {
+  t += dt; hurt = Math.max(0, hurt - dt);
+  for (const p of parts) { p.x += p.vx * dt; p.y += p.vy * dt; p.life -= dt * 1.5 } parts = parts.filter(p => p.life > 0);
+  const c = C();
+  if (run) {
+    if (aim) {
+      const want = Math.atan2(aim.y - c.y, aim.x - c.x); let d = want - ang; while (d > Math.PI) d -= Math.PI * 2; while (d < -Math.PI) d += Math.PI * 2;
+      ang += Math.max(-10 * dt, Math.min(10 * dt, d));
+      fireT -= dt; if (fireT <= 0) { fireT = .16; shots.push({ x: c.x + Math.cos(ang) * 28, y: c.y + Math.sin(ang) * 28, vx: Math.cos(ang) * 700, vy: Math.sin(ang) * 700 }); G.beep(1100, .02, 'square', .015) }
+    }
+    spawn -= dt; if (spawn <= 0) { rock(Math.random() < .5 ? 34 : 24); spawn = Math.max(.45, 1.6 - t * .02) }
+    for (const s of shots) { s.x += s.vx * dt; s.y += s.vy * dt }
+    shots = shots.filter(s => s.x > -10 && s.y > -10 && s.x < K.W + 10 && s.y < K.H + 10 && !s.dead);
+    const born = [];
+    for (const r of rocks) {
+      r.x += r.vx * dt; r.y += r.vy * dt; r.rot += r.vr * dt;
+      for (const s of shots) if (!s.dead && Math.hypot(s.x - r.x, s.y - r.y) < r.r) {
+        s.dead = 1; r.dead = 1; boom(r.x, r.y, '#ffb13d', 12); score += r.r > 30 ? 10 : r.r > 20 ? 20 : 30; G.set('s', score); G.beep(160 + r.r * 3, .1, 'triangle', .08);
+        if (r.r > 16) for (let k = 0; k < 2; k++) born.push([r.r * .62, r.x, r.y]);
+        break;
+      }
+      if (!r.dead && Math.hypot(r.x - c.x, r.y - c.y) < r.r + 26) {
+        r.dead = 1; hp--; hurt = .4; boom(r.x, r.y, '#ff4d6d', 20); G.beep(110, .4, 'sawtooth');
+        G.set('l', '🛡️'.repeat(Math.max(0, hp)) + '▫️'.repeat(3 - Math.max(0, hp)));
+        if (hp <= 0) { run = false; boom(c.x, c.y, '#3df5ff', 60); G.set('b', G.best('turret', score)); setTimeout(() => G.overlay('Base destroyed', 'Score: ' + score, 'Play again', start), 800) }
+      }
+    }
+    born.forEach(([r, px, py]) => rock(r, px, py));
+    rocks = rocks.filter(r => !r.dead && Math.hypot(r.x - c.x, r.y - c.y) < Math.hypot(K.W, K.H));
+  }
+  x.fillStyle = '#05030f'; x.fillRect(0, 0, K.W, K.H);
+  for (let i = 0; i < 60; i++) { x.fillStyle = `rgba(200,220,255,${.2 + (i % 5) * .1})`; x.fillRect((i * 137.5) % K.W, (i * 89.3) % K.H, 1.5, 1.5) }
+  x.strokeStyle = '#ffb13d'; x.lineWidth = 2; x.shadowColor = '#ffb13d'; x.shadowBlur = 8;
+  for (const r of rocks) { x.beginPath(); r.pts.forEach((k, i) => { const a = r.rot + i / 9 * Math.PI * 2; x.lineTo(r.x + Math.cos(a) * r.r * k, r.y + Math.sin(a) * r.r * k) }); x.closePath(); x.stroke() }
+  x.fillStyle = '#ffe35a'; x.shadowColor = '#ffe35a'; for (const s of shots) { x.beginPath(); x.arc(s.x, s.y, 3, 0, 7); x.fill() }
+  if (run || hp > 0) {
+    x.strokeStyle = hurt ? '#ff4d6d' : 'rgba(61,245,255,.5)'; x.shadowColor = x.strokeStyle; x.lineWidth = 3; x.beginPath(); x.arc(c.x, c.y, 34, 0, 7); x.stroke();
+    x.fillStyle = '#3df5ff'; x.shadowColor = '#3df5ff'; x.beginPath(); x.arc(c.x, c.y, 18, 0, 7); x.fill();
+    x.save(); x.translate(c.x, c.y); x.rotate(ang); x.fillRect(0, -5, 30, 10); x.restore();
+  }
+  x.shadowBlur = 0;
+  for (const p of parts) { x.globalAlpha = p.life; x.fillStyle = p.col; x.fillRect(p.x - 2, p.y - 2, 4, 4) } x.globalAlpha = 1;
+});
+G.overlay('Space Turret', 'Touch and hold where you want to shoot. The turret turns and fires.<br>Big rocks break into smaller ones.<br>Protect your base — 3 shields.', 'Start', start);
+</script></body></html>

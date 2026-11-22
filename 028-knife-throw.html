@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Knife Throw</title><script>
+// Shared helpers for every arcade game
+const G = (() => {
+  const st = document.createElement('style');
+  st.textContent = `
+html,body{margin:0;height:100%;background:#0b0820;color:#fff;font-family:system-ui,-apple-system,sans-serif;overflow:hidden;
+  touch-action:none;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
+.hud{position:fixed;top:12px;left:0;right:0;display:flex;justify-content:space-between;padding:0 18px;font-weight:700;
+  letter-spacing:1px;z-index:5;pointer-events:none;color:#cfe8ff}
+.hud b{color:#fff;font-size:20px;text-shadow:0 0 10px #3df5ff}
+.ov{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  background:rgba(8,5,25,.85);z-index:10;text-align:center;padding:20px}
+.ov h1{margin:0 0 10px;font-size:clamp(30px,8vw,52px);background:linear-gradient(90deg,#3df5ff,#ff3df0);
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.ov p{opacity:.88;line-height:1.6;max-width:340px;margin:6px 0}
+.ov button{margin-top:18px;font:inherit;font-weight:800;font-size:18px;padding:13px 34px;border:0;border-radius:999px;
+  background:linear-gradient(90deg,#3df5ff,#ff3df0);color:#0b0820;cursor:pointer}
+`;
+  document.head.appendChild(st);
+
+  let ac;
+  function beep(f, d = .08, type = 'sine', v = .1) {
+    try {
+      ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.type = type; o.frequency.value = f;
+      g.gain.setValueAtTime(v, ac.currentTime);
+      g.gain.exponentialRampToValueAtTime(.001, ac.currentTime + d);
+      o.connect(g).connect(ac.destination); o.start(); o.stop(ac.currentTime + d);
+    } catch (e) {}
+  }
+  function getBest(k) { try { return +localStorage.getItem('arc_' + k) || 0 } catch (e) { return 0 } }
+  function setBest(k, v) { try { localStorage.setItem('arc_' + k, v) } catch (e) {} }
+  // Save if higher (or lower when lowerIsBetter). Returns current best.
+  function best(k, v, lowerIsBetter) {
+    const b = getBest(k);
+    if (v != null && (!b || (lowerIsBetter ? v < b : v > b))) { setBest(k, v); return v }
+    return b;
+  }
+  function set(id, v) { const e = document.getElementById(id); if (e) e.textContent = v }
+
+  function overlay(title, html, btn, cb) {
+    let o = document.querySelector('.ov');
+    if (!o) { o = document.createElement('div'); o.className = 'ov'; document.body.appendChild(o) }
+    o.innerHTML = `<h1>${title}</h1><p>${html}</p><button>${btn}</button>`;
+    o.style.display = 'flex';
+    o.addEventListener('pointerdown', e => e.stopPropagation());
+    o.querySelector('button').onclick = e => { e.stopPropagation(); o.style.display = 'none'; beep(440, .08, 'triangle'); cb() };
+  }
+
+  // Swipe (touch/mouse) + arrow keys / WASD → 'L','R','U','D'
+  function swipe(cb) {
+    let sx = null, sy = null;
+    addEventListener('pointerdown', e => { sx = e.clientX; sy = e.clientY });
+    addEventListener('pointerup', e => {
+      if (sx == null) return;
+      const dx = e.clientX - sx, dy = e.clientY - sy; sx = null;
+      if (Math.max(Math.abs(dx), Math.abs(dy)) < 20) return;
+      cb(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'R' : 'L') : (dy > 0 ? 'D' : 'U'));
+    });
+    addEventListener('keydown', e => {
+      const m = { ArrowLeft: 'L', ArrowRight: 'R', ArrowUp: 'U', ArrowDown: 'D', a: 'L', d: 'R', w: 'U', s: 'D' }[e.key];
+      if (m) { e.preventDefault(); cb(m) }
+    });
+  }
+
+  // Full-screen crisp canvas. Returns {c, x, W, H}; set .onresize to react.
+  function canvas() {
+    const c = document.createElement('canvas');
+    c.style.cssText = 'display:block;width:100vw;height:100vh';
+    document.body.prepend(c);
+    const o = { c, x: c.getContext('2d'), W: 0, H: 0 };
+    function r() {
+      const d = Math.min(devicePixelRatio || 1, 2);
+      o.W = innerWidth; o.H = innerHeight; c.width = o.W * d; c.height = o.H * d;
+      o.x.setTransform(d, 0, 0, d, 0, 0); o.onresize && o.onresize();
+    }
+    addEventListener('resize', r); r();
+    return o;
+  }
+
+  // Game loop with delta time (seconds, capped)
+  function loop(fn) {
+    let last = performance.now();
+    function f(t) { const dt = Math.min(.05, (t - last) / 1000); last = t; fn(dt); requestAnimationFrame(f) }
+    requestAnimationFrame(f);
+  }
+
+  return { beep, getBest, setBest, best, set, overlay, swipe, canvas, loop };
+})();
+
+</script></head><body>
+<div class="hud"><span>Score <b id="s">0</b></span><span>Stage <b id="l">1</b></span><span>Best <b id="b">0</b></span></div>
+<script>
+const K = G.canvas(), x = K.x, KL = 60;
+let rot = 0, spd = 2, stuck = [], apples = [], fly = null, left = 0, stage = 1, score = 0, run = false, t = 0, shake = 0, falling = [], pattern = 0;
+G.set('b', G.best('knife'));
+const TR = () => Math.min(K.W, K.H) * .2, TY = () => K.H * .34;
+function setup() {
+  stuck = []; apples = []; fly = null; left = 5 + Math.min(stage, 6); pattern = stage % 3;
+  const pre = Math.min(stage - 1, 4); for (let i = 0; i < pre; i++) stuck.push(i * (Math.PI * 2 / pre) + Math.random() * .3);
+  if (Math.random() < .7) { let a; do { a = Math.random() * 7 } while (stuck.some(s => Math.abs(angDiff(s, a)) < .4)); apples.push(a) }
+  G.set('l', stage);
+}
+const angDiff = (a, b) => { let d = (a - b) % (Math.PI * 2); if (d > Math.PI) d -= Math.PI * 2; if (d < -Math.PI) d += Math.PI * 2; return d };
+function start() { stage = 1; score = 0; run = true; G.set('s', 0); setup() }
+function throwK() { if (run && !fly && left > 0) { fly = { y: K.H - 90 }; left--; G.beep(900, .03, 'square', .04) } }
+addEventListener('pointerdown', throwK);
+addEventListener('keydown', e => { if (e.code == 'Space') { e.preventDefault(); throwK() } });
+function knife(len, col) {
+  x.fillStyle = '#ccd6e0'; x.beginPath(); x.moveTo(0, 0); x.lineTo(-5, -6); x.lineTo(-5, -len * .55); x.lineTo(5, -len * .55); x.lineTo(5, -6); x.closePath(); x.fill();
+  x.fillStyle = col; x.fillRect(-6, -len, 12, len * .45);
+}
+G.loop(dt => {
+  t += dt; shake *= .85;
+  if (run) {
+    let s = spd + stage * .25;
+    if (pattern === 1) s *= Math.sin(t * 1.3) * 1.4; if (pattern === 2) s *= (Math.sin(t * .7) > 0 ? 1 : -1.3);
+    rot += s * dt;
+    if (fly) {
+      fly.y -= 1800 * dt;
+      if (fly.y <= TY() + TR()) {
+        const a = Math.PI / 2 - rot; // contact angle in target frame
+        if (stuck.some(k => Math.abs(angDiff(k, a)) < .2)) {
+          run = false; shake = 14; falling.push({ y: fly.y, vy: -200, r: 0 }); fly = null; G.beep(120, .5, 'sawtooth');
+          G.set('b', G.best('knife', score)); setTimeout(() => G.overlay('Clang!', 'You hit another knife.<br>Score: ' + score + ' · Stage ' + stage, 'Play again', start), 700);
+        } else {
+          stuck.push(a); fly = null; score++; shake = 4; G.beep(300, .05, 'square', .06);
+          apples = apples.filter(ap => { if (Math.abs(angDiff(ap, a)) < .25) { score += 3; G.beep(1100, .1, 'triangle'); return false } return true });
+          G.set('s', score);
+          if (left === 0) { G.beep(900, .3, 'triangle'); stage++; setTimeout(() => { if (run) setup() }, 500) }
+        }
+      }
+    }
+  }
+  for (const f of falling) { f.vy += 1500 * dt; f.y += f.vy * dt; f.r += dt * 8 } falling = falling.filter(f => f.y < K.H + 100);
+  // draw
+  x.fillStyle = '#0b0820'; x.fillRect(0, 0, K.W, K.H);
+  x.save(); x.translate((Math.random() - .5) * shake, (Math.random() - .5) * shake);
+  const cx = K.W / 2, cy = TY(), r = TR();
+  x.save(); x.translate(cx, cy); x.rotate(rot);
+  for (const a of stuck) { x.save(); x.rotate(a); x.translate(r - 8, 0); x.rotate(Math.PI / 2); knife(KL, '#ff3df0'); x.restore() }
+  for (const a of apples) { x.save(); x.rotate(a); x.translate(r + 12, 0); x.fillStyle = '#ff4d6d'; x.shadowColor = '#ff4d6d'; x.shadowBlur = 12; x.beginPath(); x.arc(0, 0, 11, 0, 7); x.fill(); x.shadowBlur = 0; x.fillStyle = '#4dff88'; x.fillRect(-2, -15, 4, 6); x.restore() }
+  const g = x.createRadialGradient(0, 0, r * .1, 0, 0, r); g.addColorStop(0, '#d79a52'); g.addColorStop(1, '#8a5524');
+  x.fillStyle = g; x.shadowColor = '#ffb13d'; x.shadowBlur = 20; x.beginPath(); x.arc(0, 0, r, 0, 7); x.fill(); x.shadowBlur = 0;
+  x.strokeStyle = 'rgba(0,0,0,.2)'; x.lineWidth = 2; for (let i = 1; i < 4; i++) { x.beginPath(); x.arc(0, 0, r * i / 4, 0, 7); x.stroke() }
+  x.restore();
+  const drawUp = y => { x.save(); x.translate(cx, y); x.scale(1, -1); knife(KL, '#3df5ff'); x.restore() };
+  if (fly) drawUp(fly.y);
+  if (run && !fly && left > 0) drawUp(K.H - 90);
+  for (const f of falling) { x.save(); x.translate(cx, f.y); x.rotate(f.r); knife(KL, '#3df5ff'); x.restore() }
+  x.restore();
+  // remaining knives
+  if (run) { x.fillStyle = '#3df5ff'; for (let i = 0; i < left; i++) x.fillRect(16, K.H - 80 - i * 18, 18, 6) }
+});
+G.overlay('Knife Throw', 'Tap (or Space) to throw a knife into the spinning log.<br>Don\'t hit a knife that\'s already there!<br>Hit the 🍎 apples for +3.', 'Start', start);
+</script></body></html>

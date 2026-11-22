@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Bowling</title><script>
+// Shared helpers for every arcade game
+const G = (() => {
+  const st = document.createElement('style');
+  st.textContent = `
+html,body{margin:0;height:100%;background:#0b0820;color:#fff;font-family:system-ui,-apple-system,sans-serif;overflow:hidden;
+  touch-action:none;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
+.hud{position:fixed;top:12px;left:0;right:0;display:flex;justify-content:space-between;padding:0 18px;font-weight:700;
+  letter-spacing:1px;z-index:5;pointer-events:none;color:#cfe8ff}
+.hud b{color:#fff;font-size:20px;text-shadow:0 0 10px #3df5ff}
+.ov{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  background:rgba(8,5,25,.85);z-index:10;text-align:center;padding:20px}
+.ov h1{margin:0 0 10px;font-size:clamp(30px,8vw,52px);background:linear-gradient(90deg,#3df5ff,#ff3df0);
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.ov p{opacity:.88;line-height:1.6;max-width:340px;margin:6px 0}
+.ov button{margin-top:18px;font:inherit;font-weight:800;font-size:18px;padding:13px 34px;border:0;border-radius:999px;
+  background:linear-gradient(90deg,#3df5ff,#ff3df0);color:#0b0820;cursor:pointer}
+`;
+  document.head.appendChild(st);
+
+  let ac;
+  function beep(f, d = .08, type = 'sine', v = .1) {
+    try {
+      ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.type = type; o.frequency.value = f;
+      g.gain.setValueAtTime(v, ac.currentTime);
+      g.gain.exponentialRampToValueAtTime(.001, ac.currentTime + d);
+      o.connect(g).connect(ac.destination); o.start(); o.stop(ac.currentTime + d);
+    } catch (e) {}
+  }
+  function getBest(k) { try { return +localStorage.getItem('arc_' + k) || 0 } catch (e) { return 0 } }
+  function setBest(k, v) { try { localStorage.setItem('arc_' + k, v) } catch (e) {} }
+  // Save if higher (or lower when lowerIsBetter). Returns current best.
+  function best(k, v, lowerIsBetter) {
+    const b = getBest(k);
+    if (v != null && (!b || (lowerIsBetter ? v < b : v > b))) { setBest(k, v); return v }
+    return b;
+  }
+  function set(id, v) { const e = document.getElementById(id); if (e) e.textContent = v }
+
+  function overlay(title, html, btn, cb) {
+    let o = document.querySelector('.ov');
+    if (!o) { o = document.createElement('div'); o.className = 'ov'; document.body.appendChild(o) }
+    o.innerHTML = `<h1>${title}</h1><p>${html}</p><button>${btn}</button>`;
+    o.style.display = 'flex';
+    o.addEventListener('pointerdown', e => e.stopPropagation());
+    o.querySelector('button').onclick = e => { e.stopPropagation(); o.style.display = 'none'; beep(440, .08, 'triangle'); cb() };
+  }
+
+  // Swipe (touch/mouse) + arrow keys / WASD → 'L','R','U','D'
+  function swipe(cb) {
+    let sx = null, sy = null;
+    addEventListener('pointerdown', e => { sx = e.clientX; sy = e.clientY });
+    addEventListener('pointerup', e => {
+      if (sx == null) return;
+      const dx = e.clientX - sx, dy = e.clientY - sy; sx = null;
+      if (Math.max(Math.abs(dx), Math.abs(dy)) < 20) return;
+      cb(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'R' : 'L') : (dy > 0 ? 'D' : 'U'));
+    });
+    addEventListener('keydown', e => {
+      const m = { ArrowLeft: 'L', ArrowRight: 'R', ArrowUp: 'U', ArrowDown: 'D', a: 'L', d: 'R', w: 'U', s: 'D' }[e.key];
+      if (m) { e.preventDefault(); cb(m) }
+    });
+  }
+
+  // Full-screen crisp canvas. Returns {c, x, W, H}; set .onresize to react.
+  function canvas() {
+    const c = document.createElement('canvas');
+    c.style.cssText = 'display:block;width:100vw;height:100vh';
+    document.body.prepend(c);
+    const o = { c, x: c.getContext('2d'), W: 0, H: 0 };
+    function r() {
+      const d = Math.min(devicePixelRatio || 1, 2);
+      o.W = innerWidth; o.H = innerHeight; c.width = o.W * d; c.height = o.H * d;
+      o.x.setTransform(d, 0, 0, d, 0, 0); o.onresize && o.onresize();
+    }
+    addEventListener('resize', r); r();
+    return o;
+  }
+
+  // Game loop with delta time (seconds, capped)
+  function loop(fn) {
+    let last = performance.now();
+    function f(t) { const dt = Math.min(.05, (t - last) / 1000); last = t; fn(dt); requestAnimationFrame(f) }
+    requestAnimationFrame(f);
+  }
+
+  return { beep, getBest, setBest, best, set, overlay, swipe, canvas, loop };
+})();
+
+</script></head><body>
+<div class="hud"><span>Frame <b id="f">1</b>/5</span><span>Score <b id="s">0</b></span><span>Best <b id="b">0</b></span></div>
+<script>
+const K = G.canvas(), x = K.x, BR = 15, PR = 9;
+let ball, pins, frame = 1, roll = 1, score = 0, run = false, rolling = false, sx, sy, st, msg = null, settle = 0, standingBefore = 10, gutter = false, path = [];
+G.set('b', G.best('bowling'));
+const L = () => { const w = Math.min(K.W * .72, 260); return { l: (K.W - w) / 2, r: (K.W + w) / 2, w, top: 60, bot: K.H - 50 } };
+function rack() {
+  const l = L(), cx = K.W / 2, top = l.top + 70, gap = Math.min(l.w / 7.5, 30); pins = [];
+  for (let row = 0; row < 4; row++) for (let k = 0; k <= row; k++) pins.push({ x: cx + (k - row / 2) * gap, y: top + (3 - row) * gap * .9, vx: 0, vy: 0, down: false, x0: 0, y0: 0 });
+  pins.forEach(p => { p.x0 = p.x; p.y0 = p.y });
+}
+function newBall() { const l = L(); ball = { x: K.W / 2, y: l.bot - 50, vx: 0, vy: 0 }; rolling = false; gutter = false }
+function start() { frame = 1; roll = 1; score = 0; run = true; G.set('s', 0); G.set('f', 1); rack(); newBall(); standingBefore = 10 }
+addEventListener('pointerdown', e => { if (run && !rolling) { sx = e.clientX; sy = e.clientY; st = performance.now(); path = [{ x: sx, y: sy }]; ball.x = Math.max(L().l + BR, Math.min(L().r - BR, e.clientX)) } });
+addEventListener('pointermove', e => { if (sx != null) { path.push({ x: e.clientX, y: e.clientY }); } });
+addEventListener('pointerup', e => {
+  if (sx == null) return; const dx = e.clientX - sx, dy = e.clientY - sy, dt = Math.max(80, performance.now() - st) / 1000; sx = null; path = [];
+  if (dy > -30) return;
+  const sp = Math.min(1100, Math.max(350, -dy / dt * .7)), a = Math.atan2(dy, dx);
+  ball.vx = Math.cos(a) * sp; ball.vy = Math.sin(a) * sp; rolling = true; settle = 0; G.beep(120, .3, 'sine', .15);
+});
+function collide(a, ra, b, rb, mb) {
+  const dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy); if (d >= ra + rb || d === 0) return false;
+  const nx = dx / d, ny = dy / d, ov = ra + rb - d; b.x += nx * ov * (mb ? 1 : .5); b.y += ny * ov * (mb ? 1 : .5); if (!mb) { a.x -= nx * ov * .5; a.y -= ny * ov * .5 }
+  const rv = (b.vx - a.vx) * nx + (b.vy - a.vy) * ny; if (rv > 0) return true;
+  if (mb) { b.vx -= 1.8 * rv * nx; b.vy -= 1.8 * rv * ny; a.vx += .15 * rv * nx; a.vy += .15 * rv * ny }
+  else { a.vx += rv * nx; a.vy += rv * ny; b.vx -= rv * nx; b.vy -= rv * ny }
+  return true;
+}
+function endRoll() {
+  const l = L(); const down = pins.filter(p => p.down || p.y < l.top - 5 || p.x < l.l || p.x > l.r).length; pins.forEach(p => { if (p.x < l.l || p.x > l.r || p.y < l.top - 5) p.down = true });
+  const knocked = (10 - standingBefore) + 0, now = pins.filter(p => !p.down).length, hit = standingBefore - now;
+  score += hit;
+  if (roll === 1 && now === 0) { score += 10; msg = { t: 'STRIKE! 🎳', life: 1.5 }; G.beep(1000, .3, 'triangle'); return nextFrame() }
+  if (roll === 2 && now === 0) { score += 5; msg = { t: 'SPARE!', life: 1.5 }; G.beep(800, .3, 'triangle'); return nextFrame() }
+  msg = { t: gutter ? 'Gutter ball' : hit + ' pins', life: 1.2 }; G.set('s', score);
+  if (roll === 1) { roll = 2; standingBefore = now; pins = pins.filter(p => !p.down); pins.forEach(p => { p.vx = p.vy = 0 }); newBall() } else nextFrame();
+}
+function nextFrame() {
+  G.set('s', score);
+  if (frame >= 5) { run = false; G.set('b', G.best('bowling', score)); setTimeout(() => G.overlay('Game over 🎳', 'Final score: ' + score + '<br>(pins + 10 per strike + 5 per spare)', 'Play again', start), 900); return }
+  frame++; roll = 1; G.set('f', frame); setTimeout(() => { rack(); standingBefore = 10; newBall() }, 700); rolling = 'wait';
+}
+G.loop(dt => {
+  if (msg) { msg.life -= dt; if (msg.life <= 0) msg = null }
+  const l = L();
+  if (rolling === true) {
+    for (let k = 0; k < 4; k++) {
+      const s = dt / 4; ball.x += ball.vx * s; ball.y += ball.vy * s; ball.vx += (Math.random() - .5) * 4;
+      if (!gutter && (ball.x < l.l + BR * .4 || ball.x > l.r - BR * .4)) { gutter = true; ball.vx = 0; ball.x = ball.x < K.W / 2 ? l.l - BR * .3 : l.r + BR * .3 }
+      for (const p of pins) { p.x += p.vx * s; p.y += p.vy * s }
+      if (!gutter) for (const p of pins) if (collide(ball, BR, p, PR, true)) { if (!p.hitSound) { G.beep(500 + Math.random() * 300, .05, 'square', .06); p.hitSound = 1 } }
+      for (let i = 0; i < pins.length; i++) for (let j = i + 1; j < pins.length; j++) collide(pins[i], PR, pins[j], PR, false);
+    }
+    const f = Math.pow(.25, dt); pins.forEach(p => { p.vx *= f; p.vy *= f; if (Math.hypot(p.x - p.x0, p.y - p.y0) > PR * 1.2) p.down = true });
+    if (ball.y < l.top - 40 || ball.vy > -5) settle += dt;
+    if (settle > .9 && pins.every(p => Math.hypot(p.vx, p.vy) < 8)) { rolling = 'done'; endRoll() }
+  }
+  // draw
+  x.fillStyle = '#0b0820'; x.fillRect(0, 0, K.W, K.H);
+  x.fillStyle = '#2a2050'; x.fillRect(l.l - 16, l.top - 30, 16, l.bot - l.top + 30); x.fillRect(l.r, l.top - 30, 16, l.bot - l.top + 30);
+  const g = x.createLinearGradient(l.l, 0, l.r, 0); g.addColorStop(0, '#c48a4a'); g.addColorStop(.5, '#e0aa66'); g.addColorStop(1, '#c48a4a'); x.fillStyle = g; x.fillRect(l.l, l.top - 30, l.w, l.bot - l.top + 30);
+  x.fillStyle = 'rgba(0,0,0,.08)'; for (let i = 1; i < 12; i++) x.fillRect(l.l + i * l.w / 12, l.top - 30, 1, l.bot - l.top + 30);
+  x.fillStyle = '#ff3df0'; for (let i = 0; i < 5; i++) { x.beginPath(); x.moveTo(K.W / 2 + (i - 2) * l.w / 7, l.bot - 160); x.lineTo(K.W / 2 + (i - 2) * l.w / 7 - 6, l.bot - 148); x.lineTo(K.W / 2 + (i - 2) * l.w / 7 + 6, l.bot - 148); x.fill() }
+  if (pins) for (const p of pins) { if (p.down && !rolling) continue; x.fillStyle = p.down ? 'rgba(255,255,255,.5)' : '#fff'; x.beginPath(); x.arc(p.x, p.y, PR, 0, 7); x.fill(); x.fillStyle = '#ff4d6d'; x.beginPath(); x.arc(p.x, p.y, PR * .45, 0, 7); x.fill() }
+  if (ball) { x.fillStyle = '#3d5bff'; x.shadowColor = '#3df5ff'; x.shadowBlur = 12; x.beginPath(); x.arc(ball.x, ball.y, BR, 0, 7); x.fill(); x.shadowBlur = 0; x.fillStyle = '#0b0820'; [[-4, -4], [4, -4], [0, 3]].forEach(([a, b]) => { x.beginPath(); x.arc(ball.x + a, ball.y + b, 2.5, 0, 7); x.fill() }) }
+  if (path.length > 1) { x.strokeStyle = 'rgba(255,255,255,.5)'; x.lineWidth = 3; x.beginPath(); path.forEach((p, i) => i ? x.lineTo(p.x, p.y) : x.moveTo(p.x, p.y)); x.stroke() }
+  if (msg) { x.globalAlpha = Math.min(1, msg.life); x.fillStyle = '#ffe35a'; x.font = '900 30px system-ui'; x.textAlign = 'center'; x.fillText(msg.t, K.W / 2, K.H * .45); x.globalAlpha = 1 }
+  if (run && !rolling) { x.fillStyle = 'rgba(255,255,255,.75)'; x.font = '700 13px system-ui'; x.textAlign = 'center'; x.fillText('Roll ' + roll + ' · swipe up to bowl', K.W / 2, l.bot - 10) }
+});
+G.overlay('Bowling', 'Touch where you want to start, then swipe up to roll.<br>Faster swipe = faster ball. Knock down all 10 pins!<br>5 frames, 2 rolls each. Strike = +10 bonus, spare = +5.', 'Start', start);
+</script></body></html>

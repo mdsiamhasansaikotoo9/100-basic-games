@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Nonogram</title><script>
+// Shared helpers for every arcade game
+const G = (() => {
+  const st = document.createElement('style');
+  st.textContent = `
+html,body{margin:0;height:100%;background:#0b0820;color:#fff;font-family:system-ui,-apple-system,sans-serif;overflow:hidden;
+  touch-action:none;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
+.hud{position:fixed;top:12px;left:0;right:0;display:flex;justify-content:space-between;padding:0 18px;font-weight:700;
+  letter-spacing:1px;z-index:5;pointer-events:none;color:#cfe8ff}
+.hud b{color:#fff;font-size:20px;text-shadow:0 0 10px #3df5ff}
+.ov{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  background:rgba(8,5,25,.85);z-index:10;text-align:center;padding:20px}
+.ov h1{margin:0 0 10px;font-size:clamp(30px,8vw,52px);background:linear-gradient(90deg,#3df5ff,#ff3df0);
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.ov p{opacity:.88;line-height:1.6;max-width:340px;margin:6px 0}
+.ov button{margin-top:18px;font:inherit;font-weight:800;font-size:18px;padding:13px 34px;border:0;border-radius:999px;
+  background:linear-gradient(90deg,#3df5ff,#ff3df0);color:#0b0820;cursor:pointer}
+`;
+  document.head.appendChild(st);
+
+  let ac;
+  function beep(f, d = .08, type = 'sine', v = .1) {
+    try {
+      ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.type = type; o.frequency.value = f;
+      g.gain.setValueAtTime(v, ac.currentTime);
+      g.gain.exponentialRampToValueAtTime(.001, ac.currentTime + d);
+      o.connect(g).connect(ac.destination); o.start(); o.stop(ac.currentTime + d);
+    } catch (e) {}
+  }
+  function getBest(k) { try { return +localStorage.getItem('arc_' + k) || 0 } catch (e) { return 0 } }
+  function setBest(k, v) { try { localStorage.setItem('arc_' + k, v) } catch (e) {} }
+  // Save if higher (or lower when lowerIsBetter). Returns current best.
+  function best(k, v, lowerIsBetter) {
+    const b = getBest(k);
+    if (v != null && (!b || (lowerIsBetter ? v < b : v > b))) { setBest(k, v); return v }
+    return b;
+  }
+  function set(id, v) { const e = document.getElementById(id); if (e) e.textContent = v }
+
+  function overlay(title, html, btn, cb) {
+    let o = document.querySelector('.ov');
+    if (!o) { o = document.createElement('div'); o.className = 'ov'; document.body.appendChild(o) }
+    o.innerHTML = `<h1>${title}</h1><p>${html}</p><button>${btn}</button>`;
+    o.style.display = 'flex';
+    o.addEventListener('pointerdown', e => e.stopPropagation());
+    o.querySelector('button').onclick = e => { e.stopPropagation(); o.style.display = 'none'; beep(440, .08, 'triangle'); cb() };
+  }
+
+  // Swipe (touch/mouse) + arrow keys / WASD → 'L','R','U','D'
+  function swipe(cb) {
+    let sx = null, sy = null;
+    addEventListener('pointerdown', e => { sx = e.clientX; sy = e.clientY });
+    addEventListener('pointerup', e => {
+      if (sx == null) return;
+      const dx = e.clientX - sx, dy = e.clientY - sy; sx = null;
+      if (Math.max(Math.abs(dx), Math.abs(dy)) < 20) return;
+      cb(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'R' : 'L') : (dy > 0 ? 'D' : 'U'));
+    });
+    addEventListener('keydown', e => {
+      const m = { ArrowLeft: 'L', ArrowRight: 'R', ArrowUp: 'U', ArrowDown: 'D', a: 'L', d: 'R', w: 'U', s: 'D' }[e.key];
+      if (m) { e.preventDefault(); cb(m) }
+    });
+  }
+
+  // Full-screen crisp canvas. Returns {c, x, W, H}; set .onresize to react.
+  function canvas() {
+    const c = document.createElement('canvas');
+    c.style.cssText = 'display:block;width:100vw;height:100vh';
+    document.body.prepend(c);
+    const o = { c, x: c.getContext('2d'), W: 0, H: 0 };
+    function r() {
+      const d = Math.min(devicePixelRatio || 1, 2);
+      o.W = innerWidth; o.H = innerHeight; c.width = o.W * d; c.height = o.H * d;
+      o.x.setTransform(d, 0, 0, d, 0, 0); o.onresize && o.onresize();
+    }
+    addEventListener('resize', r); r();
+    return o;
+  }
+
+  // Game loop with delta time (seconds, capped)
+  function loop(fn) {
+    let last = performance.now();
+    function f(t) { const dt = Math.min(.05, (t - last) / 1000); last = t; fn(dt); requestAnimationFrame(f) }
+    requestAnimationFrame(f);
+  }
+
+  return { beep, getBest, setBest, best, set, overlay, swipe, canvas, loop };
+})();
+
+</script>
+<style>#mode{position:fixed;right:12px;bottom:12px;z-index:20;font:inherit;font-weight:800;font-size:15px;color:#0b0820;background:#3df5ff;border:0;border-radius:999px;padding:9px 16px}
+#mode.x{background:#ff8a3d}</style></head><body>
+<div class="hud"><span>Puzzle <b id="s">1</b></span><span>Mistakes <b id="m">0</b></span><span>Best <b id="b">0</b></span></div>
+<button id="mode">■ Fill</button>
+<script>
+const K = G.canvas(), x = K.x;
+let N, sol, st, rc, cc, level = 1, mist = 0, run = false, cell, ox, oy, xmode = false, flash = [];
+G.set('b', G.best('nonogram'));
+const mb = document.getElementById('mode'); mb.onclick = () => { xmode = !xmode; mb.textContent = xmode ? '✕ Mark' : '■ Fill'; mb.classList.toggle('x', xmode) };
+const clue = a => { const o = []; let k = 0; for (const v of a) { if (v) k++; else if (k) { o.push(k); k = 0 } } if (k) o.push(k); return o.length ? o : [0] };
+function layout() { if (!N) return; const room = Math.min(K.W - 16, K.H - 140); cell = Math.floor(room / (N + Math.ceil(N / 2) + .5)); const cw = Math.ceil(N / 2) * cell * .75 + 6; ox = (K.W - cell * N - cw) / 2 + cw; oy = Math.max(60, (K.H - cell * N - cw) / 2 + cw - 10) }
+K.onresize = layout;
+function make() {
+  N = level < 3 ? 5 : level < 6 ? 6 : level < 9 ? 7 : 8;
+  do { sol = [...Array(N * N)].map(() => Math.random() < .58 ? 1 : 0) } while (sol.filter(Boolean).length < N);
+  st = Array(N * N).fill(0); rc = [...Array(N)].map((_, r) => clue(sol.slice(r * N, r * N + N))); cc = [...Array(N)].map((_, c) => clue([...Array(N)].map((_, r) => sol[r * N + c])));
+  mist = 0; G.set('m', 0); G.set('s', level); run = true; layout();
+}
+const done = () => sol.every((v, i) => !v || st[i] === 1);
+addEventListener('pointerdown', e => {
+  if (!run) return; const c = Math.floor((e.clientX - ox) / cell), r = Math.floor((e.clientY - oy) / cell); if (r < 0 || c < 0 || r >= N || c >= N) return;
+  const i = r * N + c; if (st[i]) return;
+  if (xmode) { st[i] = 2; G.beep(300, .03, 'square', .03); if (sol[i]) { st[i] = 1; mist++; flash.push({ i, life: 1 }); G.beep(150, .2, 'sawtooth') } }
+  else { if (sol[i]) { st[i] = 1; G.beep(500, .04, 'triangle') } else { st[i] = 2; mist++; flash.push({ i, life: 1 }); G.beep(150, .2, 'sawtooth') } }
+  G.set('m', mist);
+  if (mist >= 3) { run = false; return setTimeout(() => G.overlay('3 mistakes', 'You reached puzzle ' + level + '.', 'Play again', () => { level = 1; make() }), 600) }
+  if (done()) { run = false; sol.forEach((v, k) => { if (!v) st[k] = 2 }); G.set('b', G.best('nonogram', level)); G.beep(900, .3, 'triangle'); setTimeout(() => G.overlay('Solved! 🖼️', 'Puzzle ' + level + ' complete.', 'Next puzzle', () => { level++; make() }), 900) }
+});
+G.loop(dt => {
+  for (const f of flash) f.life -= dt * 2; flash = flash.filter(f => f.life > 0);
+  x.fillStyle = '#0b0820'; x.fillRect(0, 0, K.W, K.H); if (!sol) return;
+  x.textAlign = 'center'; x.textBaseline = 'middle'; x.font = `700 ${Math.max(11, cell * .38)}px system-ui`;
+  for (let r = 0; r < N; r++) {
+    const rowDone = sol.slice(r * N, r * N + N).every((v, k) => !v || st[r * N + k] === 1);
+    x.fillStyle = rowDone ? '#4a4a6a' : '#cfe8ff'; rc[r].slice().reverse().forEach((n, k) => x.fillText(n, ox - (k + .6) * cell * .62, oy + (r + .5) * cell));
+  }
+  for (let c = 0; c < N; c++) {
+    const colDone = [...Array(N)].every((_, r) => !sol[r * N + c] || st[r * N + c] === 1);
+    x.fillStyle = colDone ? '#4a4a6a' : '#cfe8ff'; cc[c].slice().reverse().forEach((n, k) => x.fillText(n, ox + (c + .5) * cell, oy - (k + .6) * cell * .62));
+  }
+  for (let i = 0; i < N * N; i++) {
+    const r = i / N | 0, c = i % N, px = ox + c * cell, py = oy + r * cell;
+    x.fillStyle = st[i] === 1 ? '#3df5ff' : '#1d1550'; x.fillRect(px + 1, py + 1, cell - 2, cell - 2);
+    if (st[i] === 2) { x.strokeStyle = '#ff8a3d'; x.lineWidth = 2; x.beginPath(); x.moveTo(px + cell * .3, py + cell * .3); x.lineTo(px + cell * .7, py + cell * .7); x.moveTo(px + cell * .7, py + cell * .3); x.lineTo(px + cell * .3, py + cell * .7); x.stroke() }
+  }
+  for (const f of flash) { x.fillStyle = `rgba(255,77,109,${f.life * .7})`; x.fillRect(ox + (f.i % N) * cell, oy + (f.i / N | 0) * cell, cell, cell) }
+  x.strokeStyle = 'rgba(255,255,255,.5)'; x.lineWidth = 2; x.strokeRect(ox, oy, cell * N, cell * N);
+});
+make();
+G.overlay('Nonogram', 'Numbers show the runs of filled squares in each row and column.<br>"3 1" means 3 filled, a gap, then 1 filled.<br>Tap to fill. Switch to ✕ Mark mode for squares you know are empty. 3 mistakes ends it.', 'Start', () => {});
+</script></body></html>

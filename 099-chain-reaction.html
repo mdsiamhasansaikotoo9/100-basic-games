@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Chain Reaction</title><script>
+// Shared helpers for every arcade game
+const G = (() => {
+  const st = document.createElement('style');
+  st.textContent = `
+html,body{margin:0;height:100%;background:#0b0820;color:#fff;font-family:system-ui,-apple-system,sans-serif;overflow:hidden;
+  touch-action:none;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
+.hud{position:fixed;top:12px;left:0;right:0;display:flex;justify-content:space-between;padding:0 18px;font-weight:700;
+  letter-spacing:1px;z-index:5;pointer-events:none;color:#cfe8ff}
+.hud b{color:#fff;font-size:20px;text-shadow:0 0 10px #3df5ff}
+.ov{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  background:rgba(8,5,25,.85);z-index:10;text-align:center;padding:20px}
+.ov h1{margin:0 0 10px;font-size:clamp(30px,8vw,52px);background:linear-gradient(90deg,#3df5ff,#ff3df0);
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.ov p{opacity:.88;line-height:1.6;max-width:340px;margin:6px 0}
+.ov button{margin-top:18px;font:inherit;font-weight:800;font-size:18px;padding:13px 34px;border:0;border-radius:999px;
+  background:linear-gradient(90deg,#3df5ff,#ff3df0);color:#0b0820;cursor:pointer}
+`;
+  document.head.appendChild(st);
+
+  let ac;
+  function beep(f, d = .08, type = 'sine', v = .1) {
+    try {
+      ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.type = type; o.frequency.value = f;
+      g.gain.setValueAtTime(v, ac.currentTime);
+      g.gain.exponentialRampToValueAtTime(.001, ac.currentTime + d);
+      o.connect(g).connect(ac.destination); o.start(); o.stop(ac.currentTime + d);
+    } catch (e) {}
+  }
+  function getBest(k) { try { return +localStorage.getItem('arc_' + k) || 0 } catch (e) { return 0 } }
+  function setBest(k, v) { try { localStorage.setItem('arc_' + k, v) } catch (e) {} }
+  // Save if higher (or lower when lowerIsBetter). Returns current best.
+  function best(k, v, lowerIsBetter) {
+    const b = getBest(k);
+    if (v != null && (!b || (lowerIsBetter ? v < b : v > b))) { setBest(k, v); return v }
+    return b;
+  }
+  function set(id, v) { const e = document.getElementById(id); if (e) e.textContent = v }
+
+  function overlay(title, html, btn, cb) {
+    let o = document.querySelector('.ov');
+    if (!o) { o = document.createElement('div'); o.className = 'ov'; document.body.appendChild(o) }
+    o.innerHTML = `<h1>${title}</h1><p>${html}</p><button>${btn}</button>`;
+    o.style.display = 'flex';
+    o.addEventListener('pointerdown', e => e.stopPropagation());
+    o.querySelector('button').onclick = e => { e.stopPropagation(); o.style.display = 'none'; beep(440, .08, 'triangle'); cb() };
+  }
+
+  // Swipe (touch/mouse) + arrow keys / WASD → 'L','R','U','D'
+  function swipe(cb) {
+    let sx = null, sy = null;
+    addEventListener('pointerdown', e => { sx = e.clientX; sy = e.clientY });
+    addEventListener('pointerup', e => {
+      if (sx == null) return;
+      const dx = e.clientX - sx, dy = e.clientY - sy; sx = null;
+      if (Math.max(Math.abs(dx), Math.abs(dy)) < 20) return;
+      cb(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'R' : 'L') : (dy > 0 ? 'D' : 'U'));
+    });
+    addEventListener('keydown', e => {
+      const m = { ArrowLeft: 'L', ArrowRight: 'R', ArrowUp: 'U', ArrowDown: 'D', a: 'L', d: 'R', w: 'U', s: 'D' }[e.key];
+      if (m) { e.preventDefault(); cb(m) }
+    });
+  }
+
+  // Full-screen crisp canvas. Returns {c, x, W, H}; set .onresize to react.
+  function canvas() {
+    const c = document.createElement('canvas');
+    c.style.cssText = 'display:block;width:100vw;height:100vh';
+    document.body.prepend(c);
+    const o = { c, x: c.getContext('2d'), W: 0, H: 0 };
+    function r() {
+      const d = Math.min(devicePixelRatio || 1, 2);
+      o.W = innerWidth; o.H = innerHeight; c.width = o.W * d; c.height = o.H * d;
+      o.x.setTransform(d, 0, 0, d, 0, 0); o.onresize && o.onresize();
+    }
+    addEventListener('resize', r); r();
+    return o;
+  }
+
+  // Game loop with delta time (seconds, capped)
+  function loop(fn) {
+    let last = performance.now();
+    function f(t) { const dt = Math.min(.05, (t - last) / 1000); last = t; fn(dt); requestAnimationFrame(f) }
+    requestAnimationFrame(f);
+  }
+
+  return { beep, getBest, setBest, best, set, overlay, swipe, canvas, loop };
+})();
+
+</script></head><body>
+<div class="hud"><span>Level <b id="s">1</b></span><span>Popped <b id="p">0</b>/<b id="n">1</b></span><span>Best <b id="b">0</b></span></div>
+<script>
+const K = G.canvas(), x = K.x;
+let dots = [], booms = [], level = 1, need = 1, popped = 0, used = false, run = false, ending = 0;
+G.set('b', G.best('chain'));
+const LV = l => ({ n: Math.min(5 + l * 4, 60), need: Math.min(Math.max(1, Math.round((5 + l * 4) * (.2 + l * .045))), Math.min(5 + l * 4, 60) - 2) });
+function make() {
+  const L = LV(level); need = L.need; popped = 0; used = false; ending = 0; booms = []; dots = [];
+  for (let i = 0; i < L.n; i++) { const a = Math.random() * 7, sp = 40 + Math.random() * 40; dots.push({ x: 20 + Math.random() * (K.W - 40), y: 70 + Math.random() * (K.H - 140), vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, h: Math.random() * 360 }) }
+  G.set('s', level); G.set('n', need); G.set('p', 0); run = true;
+}
+addEventListener('pointerdown', e => { if (!run || used) return; used = true; booms.push({ x: e.clientX, y: e.clientY, t: 0, h: 50, mine: 1 }); G.beep(300, .15, 'triangle') });
+const R = t => t < .4 ? t / .4 * 48 : t < 1.6 ? 48 : t < 2 ? (2 - t) / .4 * 48 : 0;
+G.loop(dt => {
+  for (const d of dots) { d.x += d.vx * dt; d.y += d.vy * dt; if (d.x < 8 || d.x > K.W - 8) d.vx *= -1; if (d.y < 60 || d.y > K.H - 50) d.vy *= -1 }
+  for (const b of booms) b.t += dt;
+  if (run) {
+    for (const d of dots) { if (d.dead) continue; for (const b of booms) if (b.t < 2 && Math.hypot(d.x - b.x, d.y - b.y) < R(b.t) + 7) { d.dead = 1; popped++; G.set('p', popped); booms.push({ x: d.x, y: d.y, t: 0, h: d.h }); G.beep(400 + popped * 25, .08, 'sine', .08); break } }
+    dots = dots.filter(d => !d.dead);
+    if (used && booms.every(b => b.t >= 2) && !ending) {
+      ending = 1; run = false; const ok = popped >= need;
+      if (ok) { G.set('b', G.best('chain', level)); G.beep(1000, .3, 'triangle') } else G.beep(150, .4, 'sawtooth');
+      setTimeout(() => G.overlay(ok ? 'Level ' + level + ' cleared! 💥' : 'Not enough...', 'You popped ' + popped + ' (needed ' + need + ').', ok ? 'Next level' : 'Try again', () => { if (ok) level++; make() }), 400);
+    }
+  }
+  booms = booms.filter(b => b.t < 2.1);
+  x.fillStyle = '#05030f'; x.fillRect(0, 0, K.W, K.H);
+  for (const b of booms) { const r = R(b.t); if (r <= 0) continue; x.fillStyle = `hsla(${b.h},90%,60%,.45)`; x.beginPath(); x.arc(b.x, b.y, r, 0, 7); x.fill(); x.strokeStyle = `hsla(${b.h},90%,75%,.8)`; x.lineWidth = 2; x.stroke() }
+  for (const d of dots) { x.fillStyle = `hsl(${d.h},90%,60%)`; x.shadowColor = x.fillStyle; x.shadowBlur = 10; x.beginPath(); x.arc(d.x, d.y, 7, 0, 7); x.fill() } x.shadowBlur = 0;
+  if (run && !used) { x.fillStyle = 'rgba(255,255,255,.7)'; x.font = '700 15px system-ui'; x.textAlign = 'center'; x.fillText('Tap ONCE to start the chain', K.W / 2, K.H - 64) }
+});
+G.overlay('Chain Reaction', 'You get ONE tap per level.<br>Your tap makes a blast. Dots that touch a blast explode too — and set off more!<br>Pop enough dots to clear the level.', 'Start', make);
+</script></body></html>

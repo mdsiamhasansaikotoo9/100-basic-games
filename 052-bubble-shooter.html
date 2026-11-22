@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Bubble Shooter</title><script>
+// Shared helpers for every arcade game
+const G = (() => {
+  const st = document.createElement('style');
+  st.textContent = `
+html,body{margin:0;height:100%;background:#0b0820;color:#fff;font-family:system-ui,-apple-system,sans-serif;overflow:hidden;
+  touch-action:none;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
+.hud{position:fixed;top:12px;left:0;right:0;display:flex;justify-content:space-between;padding:0 18px;font-weight:700;
+  letter-spacing:1px;z-index:5;pointer-events:none;color:#cfe8ff}
+.hud b{color:#fff;font-size:20px;text-shadow:0 0 10px #3df5ff}
+.ov{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  background:rgba(8,5,25,.85);z-index:10;text-align:center;padding:20px}
+.ov h1{margin:0 0 10px;font-size:clamp(30px,8vw,52px);background:linear-gradient(90deg,#3df5ff,#ff3df0);
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.ov p{opacity:.88;line-height:1.6;max-width:340px;margin:6px 0}
+.ov button{margin-top:18px;font:inherit;font-weight:800;font-size:18px;padding:13px 34px;border:0;border-radius:999px;
+  background:linear-gradient(90deg,#3df5ff,#ff3df0);color:#0b0820;cursor:pointer}
+`;
+  document.head.appendChild(st);
+
+  let ac;
+  function beep(f, d = .08, type = 'sine', v = .1) {
+    try {
+      ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.type = type; o.frequency.value = f;
+      g.gain.setValueAtTime(v, ac.currentTime);
+      g.gain.exponentialRampToValueAtTime(.001, ac.currentTime + d);
+      o.connect(g).connect(ac.destination); o.start(); o.stop(ac.currentTime + d);
+    } catch (e) {}
+  }
+  function getBest(k) { try { return +localStorage.getItem('arc_' + k) || 0 } catch (e) { return 0 } }
+  function setBest(k, v) { try { localStorage.setItem('arc_' + k, v) } catch (e) {} }
+  // Save if higher (or lower when lowerIsBetter). Returns current best.
+  function best(k, v, lowerIsBetter) {
+    const b = getBest(k);
+    if (v != null && (!b || (lowerIsBetter ? v < b : v > b))) { setBest(k, v); return v }
+    return b;
+  }
+  function set(id, v) { const e = document.getElementById(id); if (e) e.textContent = v }
+
+  function overlay(title, html, btn, cb) {
+    let o = document.querySelector('.ov');
+    if (!o) { o = document.createElement('div'); o.className = 'ov'; document.body.appendChild(o) }
+    o.innerHTML = `<h1>${title}</h1><p>${html}</p><button>${btn}</button>`;
+    o.style.display = 'flex';
+    o.addEventListener('pointerdown', e => e.stopPropagation());
+    o.querySelector('button').onclick = e => { e.stopPropagation(); o.style.display = 'none'; beep(440, .08, 'triangle'); cb() };
+  }
+
+  // Swipe (touch/mouse) + arrow keys / WASD → 'L','R','U','D'
+  function swipe(cb) {
+    let sx = null, sy = null;
+    addEventListener('pointerdown', e => { sx = e.clientX; sy = e.clientY });
+    addEventListener('pointerup', e => {
+      if (sx == null) return;
+      const dx = e.clientX - sx, dy = e.clientY - sy; sx = null;
+      if (Math.max(Math.abs(dx), Math.abs(dy)) < 20) return;
+      cb(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'R' : 'L') : (dy > 0 ? 'D' : 'U'));
+    });
+    addEventListener('keydown', e => {
+      const m = { ArrowLeft: 'L', ArrowRight: 'R', ArrowUp: 'U', ArrowDown: 'D', a: 'L', d: 'R', w: 'U', s: 'D' }[e.key];
+      if (m) { e.preventDefault(); cb(m) }
+    });
+  }
+
+  // Full-screen crisp canvas. Returns {c, x, W, H}; set .onresize to react.
+  function canvas() {
+    const c = document.createElement('canvas');
+    c.style.cssText = 'display:block;width:100vw;height:100vh';
+    document.body.prepend(c);
+    const o = { c, x: c.getContext('2d'), W: 0, H: 0 };
+    function r() {
+      const d = Math.min(devicePixelRatio || 1, 2);
+      o.W = innerWidth; o.H = innerHeight; c.width = o.W * d; c.height = o.H * d;
+      o.x.setTransform(d, 0, 0, d, 0, 0); o.onresize && o.onresize();
+    }
+    addEventListener('resize', r); r();
+    return o;
+  }
+
+  // Game loop with delta time (seconds, capped)
+  function loop(fn) {
+    let last = performance.now();
+    function f(t) { const dt = Math.min(.05, (t - last) / 1000); last = t; fn(dt); requestAnimationFrame(f) }
+    requestAnimationFrame(f);
+  }
+
+  return { beep, getBest, setBest, best, set, overlay, swipe, canvas, loop };
+})();
+
+</script></head><body>
+<div class="hud"><span>Score <b id="s">0</b></span><span>Best <b id="b">0</b></span></div>
+<script>
+const K = G.canvas(), x = K.x, COLS = 10, ROWS = 13, CL = ['#ff4d6d', '#ffe35a', '#4dff88', '#3df5ff', '#b44dff', '#ff8a3d'];
+let grid, R, ox, oy, shooter, cur, nxt, shot = null, aim = null, score = 0, run = false, shots = 0, parity = 0, pops = [], ncol = 4;
+G.set('b', G.best('bubbleshooter'));
+K.onresize = () => { R = Math.min(K.W - 16, 460) / (COLS * 2); ox = (K.W - R * 2 * COLS) / 2; oy = 52; shooter = { x: K.W / 2, y: K.H - 90 } }; K.onresize();
+const odd = r => (r + parity) % 2 === 1, rowLen = r => odd(r) ? COLS - 1 : COLS;
+const pos = (r, c) => ({ x: ox + R + c * 2 * R + (odd(r) ? R : 0), y: oy + R + r * R * Math.sqrt(3) });
+function nbs(r, c) { const o = odd(r) ? [[-1, 0], [-1, 1], [0, -1], [0, 1], [1, 0], [1, 1]] : [[-1, -1], [-1, 0], [0, -1], [0, 1], [1, -1], [1, 0]]; return o.map(([a, b]) => [r + a, c + b]).filter(([a, b]) => a >= 0 && a < ROWS && b >= 0 && b < rowLen(a)) }
+const pickCol = () => { const live = new Set(grid.flat().filter(v => v >= 0)); const arr = live.size ? [...live] : [...Array(ncol).keys()]; return arr[Math.random() * arr.length | 0] };
+function start() {
+  parity = 0; grid = [...Array(ROWS)].map((_, r) => Array(COLS).fill(-1));
+  for (let r = 0; r < 5; r++) for (let c = 0; c < rowLen(r); c++) grid[r][c] = Math.random() * ncol | 0;
+  score = 0; shots = 0; G.set('s', 0); cur = pickCol(); nxt = pickCol(); shot = null; run = true;
+}
+function addRow() {
+  parity ^= 1; grid.pop(); const row = Array(COLS).fill(-1); grid.unshift(row);
+  for (let c = 0; c < rowLen(0); c++) row[c] = Math.random() * ncol | 0;
+  for (let r = 0; r < ROWS; r++) for (let c = rowLen(r); c < COLS; c++) grid[r][c] = -1;
+}
+function snap(px, py) {
+  let best = null, bd = 1e9;
+  const r0 = Math.round((py - oy - R) / (R * Math.sqrt(3)));
+  for (let r = Math.max(0, r0 - 1); r <= Math.min(ROWS - 1, r0 + 1); r++) for (let c = 0; c < rowLen(r); c++) {
+    if (grid[r][c] >= 0) continue; const p = pos(r, c), d = Math.hypot(p.x - px, p.y - py); if (d < bd) { bd = d; best = [r, c] }
+  }
+  return best;
+}
+function settle(r, c, col) {
+  grid[r][c] = col;
+  const same = [[r, c]], seen = new Set([r + ',' + c]);
+  for (let i = 0; i < same.length; i++) for (const [a, b] of nbs(...same[i])) if (!seen.has(a + ',' + b) && grid[a][b] === col) { seen.add(a + ',' + b); same.push([a, b]) }
+  if (same.length >= 3) {
+    same.forEach(([a, b]) => { pops.push({ ...pos(a, b), c: CL[grid[a][b]], life: 1 }); grid[a][b] = -1 }); score += same.length * 10; G.beep(600 + same.length * 40, .1, 'triangle');
+    // drop floaters
+    const keep = new Set(), q = []; for (let c2 = 0; c2 < rowLen(0); c2++) if (grid[0][c2] >= 0) { keep.add('0,' + c2); q.push([0, c2]) }
+    for (let i = 0; i < q.length; i++) for (const [a, b] of nbs(...q[i])) if (grid[a][b] >= 0 && !keep.has(a + ',' + b)) { keep.add(a + ',' + b); q.push([a, b]) }
+    let fell = 0; for (let a = 0; a < ROWS; a++) for (let b = 0; b < rowLen(a); b++) if (grid[a][b] >= 0 && !keep.has(a + ',' + b)) { pops.push({ ...pos(a, b), c: CL[grid[a][b]], life: 1, fall: 1 }); grid[a][b] = -1; fell++ }
+    if (fell) { score += fell * 20; G.beep(1000, .15, 'triangle') }
+    G.set('s', score);
+  } else G.beep(300, .04, 'square', .05);
+  shots++;
+  if (grid.flat().every(v => v < 0)) { score += 500; G.set('s', score); ncol = Math.min(6, ncol + 1); for (let k = 0; k < 4; k++) addRow() }
+  else if (shots % 6 === 0) addRow();
+  if (grid[ROWS - 1].some(v => v >= 0)) { run = false; G.beep(100, .5, 'sawtooth'); G.set('b', G.best('bubbleshooter', score)); setTimeout(() => G.overlay('Game Over', 'Score: ' + score, 'Play again', () => { ncol = 4; start() }), 500); return }
+  cur = nxt; nxt = pickCol();
+}
+const setAim = e => { aim = { x: e.clientX, y: Math.min(e.clientY, shooter.y - 20) } };
+addEventListener('pointerdown', setAim); addEventListener('pointermove', e => { if (aim) setAim(e) });
+addEventListener('pointerup', () => {
+  if (!aim || !run || shot) { aim = null; return }
+  const a = Math.atan2(aim.y - shooter.y, aim.x - shooter.x), sp = 1100; aim = null;
+  if (Math.sin(a) > -.1) return;
+  shot = { x: shooter.x, y: shooter.y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, c: cur }; G.beep(500, .04, 'triangle', .05);
+});
+G.loop(dt => {
+  for (const p of pops) { p.life -= dt * 2; if (p.fall) p.y += 400 * dt } pops = pops.filter(p => p.life > 0);
+  if (shot) {
+    for (let k = 0; k < 6 && shot; k++) {
+      const s = dt / 6; shot.x += shot.vx * s; shot.y += shot.vy * s;
+      if (shot.x < ox + R) { shot.x = ox + R; shot.vx = Math.abs(shot.vx) } if (shot.x > ox + R * 2 * COLS - R) { shot.x = ox + R * 2 * COLS - R; shot.vx = -Math.abs(shot.vx) }
+      let hit = shot.y <= oy + R;
+      if (!hit) for (let r = 0; r < ROWS && !hit; r++) for (let c = 0; c < rowLen(r); c++) if (grid[r][c] >= 0) { const p = pos(r, c); if (Math.hypot(p.x - shot.x, p.y - shot.y) < R * 1.8) { hit = true; break } }
+      if (hit) { const sn = snap(shot.x, shot.y); const col = shot.c; shot = null; if (sn) settle(sn[0], sn[1], col) }
+    }
+  }
+  x.fillStyle = '#0b0820'; x.fillRect(0, 0, K.W, K.H); if (!grid) return;
+  x.fillStyle = '#130d2c'; x.fillRect(ox, oy, R * 2 * COLS, shooter.y - oy);
+  x.strokeStyle = 'rgba(255,77,109,.4)'; x.setLineDash([6, 6]); x.beginPath(); x.moveTo(ox, pos(ROWS - 1, 0).y - R); x.lineTo(ox + R * 2 * COLS, pos(ROWS - 1, 0).y - R); x.stroke(); x.setLineDash([]);
+  const ball = (px, py, c, a = 1) => { x.globalAlpha = a; const g2 = x.createRadialGradient(px - R * .3, py - R * .3, R * .1, px, py, R); g2.addColorStop(0, '#fff'); g2.addColorStop(.35, CL[c] || c); g2.addColorStop(1, CL[c] || c); x.fillStyle = g2; x.beginPath(); x.arc(px, py, R * .94, 0, 7); x.fill(); x.globalAlpha = 1 };
+  for (let r = 0; r < ROWS; r++) for (let c = 0; c < rowLen(r); c++) if (grid[r][c] >= 0) { const p = pos(r, c); ball(p.x, p.y, grid[r][c]) }
+  for (const p of pops) ball(p.x, p.y, p.c, p.life);
+  if (aim && run && !shot) { const a = Math.atan2(aim.y - shooter.y, aim.x - shooter.x); x.strokeStyle = 'rgba(255,255,255,.4)'; x.setLineDash([4, 8]); x.lineWidth = 2; x.beginPath(); x.moveTo(shooter.x, shooter.y); x.lineTo(shooter.x + Math.cos(a) * 400, shooter.y + Math.sin(a) * 400); x.stroke(); x.setLineDash([]) }
+  if (run) { if (!shot) ball(shooter.x, shooter.y, cur); ball(shooter.x + 60, shooter.y + 20, nxt, .7); x.fillStyle = '#cfe8ff'; x.font = '600 12px system-ui'; x.textAlign = 'center'; x.fillText('next', shooter.x + 60, shooter.y + 50) }
+  if (shot) ball(shot.x, shot.y, shot.c);
+});
+G.overlay('Bubble Shooter', 'Drag to aim, let go to shoot.<br>Join 3 or more of the same color to pop them.<br>Bounce off the walls for tricky shots. A new row drops every 6 shots.', 'Start', start);
+</script></body></html>

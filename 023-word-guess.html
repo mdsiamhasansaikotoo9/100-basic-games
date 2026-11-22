@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Word Guess</title><script>
+// Shared helpers for every arcade game
+const G = (() => {
+  const st = document.createElement('style');
+  st.textContent = `
+html,body{margin:0;height:100%;background:#0b0820;color:#fff;font-family:system-ui,-apple-system,sans-serif;overflow:hidden;
+  touch-action:none;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
+.hud{position:fixed;top:12px;left:0;right:0;display:flex;justify-content:space-between;padding:0 18px;font-weight:700;
+  letter-spacing:1px;z-index:5;pointer-events:none;color:#cfe8ff}
+.hud b{color:#fff;font-size:20px;text-shadow:0 0 10px #3df5ff}
+.ov{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  background:rgba(8,5,25,.85);z-index:10;text-align:center;padding:20px}
+.ov h1{margin:0 0 10px;font-size:clamp(30px,8vw,52px);background:linear-gradient(90deg,#3df5ff,#ff3df0);
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.ov p{opacity:.88;line-height:1.6;max-width:340px;margin:6px 0}
+.ov button{margin-top:18px;font:inherit;font-weight:800;font-size:18px;padding:13px 34px;border:0;border-radius:999px;
+  background:linear-gradient(90deg,#3df5ff,#ff3df0);color:#0b0820;cursor:pointer}
+`;
+  document.head.appendChild(st);
+
+  let ac;
+  function beep(f, d = .08, type = 'sine', v = .1) {
+    try {
+      ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.type = type; o.frequency.value = f;
+      g.gain.setValueAtTime(v, ac.currentTime);
+      g.gain.exponentialRampToValueAtTime(.001, ac.currentTime + d);
+      o.connect(g).connect(ac.destination); o.start(); o.stop(ac.currentTime + d);
+    } catch (e) {}
+  }
+  function getBest(k) { try { return +localStorage.getItem('arc_' + k) || 0 } catch (e) { return 0 } }
+  function setBest(k, v) { try { localStorage.setItem('arc_' + k, v) } catch (e) {} }
+  // Save if higher (or lower when lowerIsBetter). Returns current best.
+  function best(k, v, lowerIsBetter) {
+    const b = getBest(k);
+    if (v != null && (!b || (lowerIsBetter ? v < b : v > b))) { setBest(k, v); return v }
+    return b;
+  }
+  function set(id, v) { const e = document.getElementById(id); if (e) e.textContent = v }
+
+  function overlay(title, html, btn, cb) {
+    let o = document.querySelector('.ov');
+    if (!o) { o = document.createElement('div'); o.className = 'ov'; document.body.appendChild(o) }
+    o.innerHTML = `<h1>${title}</h1><p>${html}</p><button>${btn}</button>`;
+    o.style.display = 'flex';
+    o.addEventListener('pointerdown', e => e.stopPropagation());
+    o.querySelector('button').onclick = e => { e.stopPropagation(); o.style.display = 'none'; beep(440, .08, 'triangle'); cb() };
+  }
+
+  // Swipe (touch/mouse) + arrow keys / WASD → 'L','R','U','D'
+  function swipe(cb) {
+    let sx = null, sy = null;
+    addEventListener('pointerdown', e => { sx = e.clientX; sy = e.clientY });
+    addEventListener('pointerup', e => {
+      if (sx == null) return;
+      const dx = e.clientX - sx, dy = e.clientY - sy; sx = null;
+      if (Math.max(Math.abs(dx), Math.abs(dy)) < 20) return;
+      cb(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'R' : 'L') : (dy > 0 ? 'D' : 'U'));
+    });
+    addEventListener('keydown', e => {
+      const m = { ArrowLeft: 'L', ArrowRight: 'R', ArrowUp: 'U', ArrowDown: 'D', a: 'L', d: 'R', w: 'U', s: 'D' }[e.key];
+      if (m) { e.preventDefault(); cb(m) }
+    });
+  }
+
+  // Full-screen crisp canvas. Returns {c, x, W, H}; set .onresize to react.
+  function canvas() {
+    const c = document.createElement('canvas');
+    c.style.cssText = 'display:block;width:100vw;height:100vh';
+    document.body.prepend(c);
+    const o = { c, x: c.getContext('2d'), W: 0, H: 0 };
+    function r() {
+      const d = Math.min(devicePixelRatio || 1, 2);
+      o.W = innerWidth; o.H = innerHeight; c.width = o.W * d; c.height = o.H * d;
+      o.x.setTransform(d, 0, 0, d, 0, 0); o.onresize && o.onresize();
+    }
+    addEventListener('resize', r); r();
+    return o;
+  }
+
+  // Game loop with delta time (seconds, capped)
+  function loop(fn) {
+    let last = performance.now();
+    function f(t) { const dt = Math.min(.05, (t - last) / 1000); last = t; fn(dt); requestAnimationFrame(f) }
+    requestAnimationFrame(f);
+  }
+
+  return { beep, getBest, setBest, best, set, overlay, swipe, canvas, loop };
+})();
+
+</script>
+<style>
+#box{position:fixed;inset:60px 0 60px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;padding:0 10px}
+#cat{color:#ffe35a;font-weight:800;letter-spacing:2px}
+#lives{font-size:24px;letter-spacing:4px}
+#word{display:flex;gap:6px;flex-wrap:wrap;justify-content:center}
+#word span{width:clamp(24px,8vw,40px);border-bottom:3px solid #3df5ff;text-align:center;font-size:clamp(22px,7vw,34px);font-weight:900;height:1.4em}
+#word span.sp{border:0}
+#kb{display:grid;grid-template-columns:repeat(7,1fr);gap:6px;width:min(96vw,440px)}
+#kb button{font:inherit;font-weight:800;font-size:18px;padding:11px 0;border:0;border-radius:10px;background:#2f2080;color:#fff;cursor:pointer}
+#kb button.ok{background:#13a05a}#kb button.no{background:#3a2440;color:#777}
+</style></head><body>
+<div class="hud"><span>Streak <b id="s">0</b></span><span>Best <b id="b">0</b></span></div>
+<div id="box"><div id="cat"></div><div id="lives"></div><div id="word"></div><div id="kb"></div></div>
+<script>
+const WORDS = {
+  ANIMALS: ['TIGER', 'ELEPHANT', 'GIRAFFE', 'DOLPHIN', 'PENGUIN', 'KANGAROO', 'RABBIT', 'MONKEY', 'TURTLE', 'ZEBRA', 'CROCODILE', 'OWL', 'SQUIRREL', 'LEOPARD', 'CAMEL'],
+  FRUITS: ['MANGO', 'BANANA', 'PINEAPPLE', 'ORANGE', 'GRAPES', 'LYCHEE', 'GUAVA', 'PAPAYA', 'WATERMELON', 'JACKFRUIT', 'COCONUT', 'STRAWBERRY', 'CHERRY', 'LEMON'],
+  COUNTRIES: ['BANGLADESH', 'JAPAN', 'BRAZIL', 'CANADA', 'EGYPT', 'FRANCE', 'INDIA', 'MEXICO', 'NEPAL', 'KENYA', 'TURKEY', 'ITALY', 'NORWAY', 'MALAYSIA'],
+  SPORTS: ['CRICKET', 'FOOTBALL', 'TENNIS', 'HOCKEY', 'BADMINTON', 'SWIMMING', 'BOXING', 'CHESS', 'KABADDI', 'VOLLEYBALL', 'CYCLING', 'GOLF'],
+  SPACE: ['PLANET', 'GALAXY', 'ROCKET', 'COMET', 'ASTEROID', 'SATURN', 'JUPITER', 'NEBULA', 'ASTRONAUT', 'ORBIT', 'METEOR', 'TELESCOPE'],
+};
+const kb = document.getElementById('kb'), keys = {};
+'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').forEach(L => { const b = document.createElement('button'); b.textContent = L; b.onclick = () => guess(L); kb.appendChild(b); keys[L] = b });
+let word, got, wrong, streak = 0, busy = false;
+const MAX = 6;
+G.set('b', G.best('wordguess'));
+function render() {
+  document.getElementById('word').innerHTML = word.split('').map(ch => `<span>${got.has(ch) ? ch : ''}</span>`).join('');
+  G.set('lives', '❤️'.repeat(MAX - wrong) + '🖤'.repeat(wrong));
+}
+function next() {
+  const cats = Object.keys(WORDS), cat = cats[Math.random() * cats.length | 0], list = WORDS[cat];
+  word = list[Math.random() * list.length | 0]; got = new Set(); wrong = 0; busy = false;
+  G.set('cat', cat); Object.values(keys).forEach(b => b.className = ''); render();
+}
+function guess(L) {
+  if (busy || keys[L].className) return;
+  if (word.includes(L)) { got.add(L); keys[L].className = 'ok'; G.beep(700, .06, 'triangle') }
+  else { wrong++; keys[L].className = 'no'; G.beep(180, .15, 'sawtooth') }
+  render();
+  if (word.split('').every(ch => got.has(ch))) {
+    busy = true; streak++; G.set('s', streak); G.set('b', G.best('wordguess', streak)); G.beep(880, .25, 'triangle');
+    setTimeout(next, 1100);
+  } else if (wrong >= MAX) {
+    busy = true; G.beep(110, .5, 'sawtooth');
+    document.getElementById('word').innerHTML = word.split('').map(ch => `<span style="color:${got.has(ch) ? '#fff' : '#ff4d6d'}">${ch}</span>`).join('');
+    setTimeout(() => G.overlay('Out of hearts', 'The word was <b>' + word + '</b>.<br>Your streak: ' + streak, 'Play again', () => { streak = 0; G.set('s', 0); next() }), 1200);
+  }
+}
+addEventListener('keydown', e => { const L = e.key.toUpperCase(); if (keys[L]) guess(L) });
+next();
+G.overlay('Word Guess', 'Guess the hidden word one letter at a time.<br>Each wrong letter costs a heart. You have 6.<br>Solve words in a row to build a streak.', 'Start', () => {});
+</script></body></html>

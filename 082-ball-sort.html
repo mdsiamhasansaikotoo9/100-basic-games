@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Ball Sort</title><script>
+// Shared helpers for every arcade game
+const G = (() => {
+  const st = document.createElement('style');
+  st.textContent = `
+html,body{margin:0;height:100%;background:#0b0820;color:#fff;font-family:system-ui,-apple-system,sans-serif;overflow:hidden;
+  touch-action:none;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
+.hud{position:fixed;top:12px;left:0;right:0;display:flex;justify-content:space-between;padding:0 18px;font-weight:700;
+  letter-spacing:1px;z-index:5;pointer-events:none;color:#cfe8ff}
+.hud b{color:#fff;font-size:20px;text-shadow:0 0 10px #3df5ff}
+.ov{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  background:rgba(8,5,25,.85);z-index:10;text-align:center;padding:20px}
+.ov h1{margin:0 0 10px;font-size:clamp(30px,8vw,52px);background:linear-gradient(90deg,#3df5ff,#ff3df0);
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.ov p{opacity:.88;line-height:1.6;max-width:340px;margin:6px 0}
+.ov button{margin-top:18px;font:inherit;font-weight:800;font-size:18px;padding:13px 34px;border:0;border-radius:999px;
+  background:linear-gradient(90deg,#3df5ff,#ff3df0);color:#0b0820;cursor:pointer}
+`;
+  document.head.appendChild(st);
+
+  let ac;
+  function beep(f, d = .08, type = 'sine', v = .1) {
+    try {
+      ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.type = type; o.frequency.value = f;
+      g.gain.setValueAtTime(v, ac.currentTime);
+      g.gain.exponentialRampToValueAtTime(.001, ac.currentTime + d);
+      o.connect(g).connect(ac.destination); o.start(); o.stop(ac.currentTime + d);
+    } catch (e) {}
+  }
+  function getBest(k) { try { return +localStorage.getItem('arc_' + k) || 0 } catch (e) { return 0 } }
+  function setBest(k, v) { try { localStorage.setItem('arc_' + k, v) } catch (e) {} }
+  // Save if higher (or lower when lowerIsBetter). Returns current best.
+  function best(k, v, lowerIsBetter) {
+    const b = getBest(k);
+    if (v != null && (!b || (lowerIsBetter ? v < b : v > b))) { setBest(k, v); return v }
+    return b;
+  }
+  function set(id, v) { const e = document.getElementById(id); if (e) e.textContent = v }
+
+  function overlay(title, html, btn, cb) {
+    let o = document.querySelector('.ov');
+    if (!o) { o = document.createElement('div'); o.className = 'ov'; document.body.appendChild(o) }
+    o.innerHTML = `<h1>${title}</h1><p>${html}</p><button>${btn}</button>`;
+    o.style.display = 'flex';
+    o.addEventListener('pointerdown', e => e.stopPropagation());
+    o.querySelector('button').onclick = e => { e.stopPropagation(); o.style.display = 'none'; beep(440, .08, 'triangle'); cb() };
+  }
+
+  // Swipe (touch/mouse) + arrow keys / WASD → 'L','R','U','D'
+  function swipe(cb) {
+    let sx = null, sy = null;
+    addEventListener('pointerdown', e => { sx = e.clientX; sy = e.clientY });
+    addEventListener('pointerup', e => {
+      if (sx == null) return;
+      const dx = e.clientX - sx, dy = e.clientY - sy; sx = null;
+      if (Math.max(Math.abs(dx), Math.abs(dy)) < 20) return;
+      cb(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'R' : 'L') : (dy > 0 ? 'D' : 'U'));
+    });
+    addEventListener('keydown', e => {
+      const m = { ArrowLeft: 'L', ArrowRight: 'R', ArrowUp: 'U', ArrowDown: 'D', a: 'L', d: 'R', w: 'U', s: 'D' }[e.key];
+      if (m) { e.preventDefault(); cb(m) }
+    });
+  }
+
+  // Full-screen crisp canvas. Returns {c, x, W, H}; set .onresize to react.
+  function canvas() {
+    const c = document.createElement('canvas');
+    c.style.cssText = 'display:block;width:100vw;height:100vh';
+    document.body.prepend(c);
+    const o = { c, x: c.getContext('2d'), W: 0, H: 0 };
+    function r() {
+      const d = Math.min(devicePixelRatio || 1, 2);
+      o.W = innerWidth; o.H = innerHeight; c.width = o.W * d; c.height = o.H * d;
+      o.x.setTransform(d, 0, 0, d, 0, 0); o.onresize && o.onresize();
+    }
+    addEventListener('resize', r); r();
+    return o;
+  }
+
+  // Game loop with delta time (seconds, capped)
+  function loop(fn) {
+    let last = performance.now();
+    function f(t) { const dt = Math.min(.05, (t - last) / 1000); last = t; fn(dt); requestAnimationFrame(f) }
+    requestAnimationFrame(f);
+  }
+
+  return { beep, getBest, setBest, best, set, overlay, swipe, canvas, loop };
+})();
+
+</script>
+<style>#ctl{position:fixed;right:12px;bottom:12px;z-index:20;display:flex;gap:8px}#ctl button{font:inherit;font-weight:700;font-size:14px;color:#0b0820;background:#3df5ff;border:0;border-radius:999px;padding:8px 14px}</style></head><body>
+<div class="hud"><span>Level <b id="s">1</b></span><span>Moves <b id="m">0</b></span><span>Best <b id="b">0</b></span></div>
+<div id="ctl"><button id="undo">↶ Undo</button><button id="rs">↺</button></div>
+<script>
+const K = G.canvas(), x = K.x, CAP = 4, CL = ['#ff4d6d', '#ffe35a', '#4dff88', '#3df5ff', '#b44dff', '#ff8a3d', '#ffffff', '#3d6bff'];
+let tubes, startT, sel = -1, level = 1, moves = 0, hist = [], run = false, lift = 0;
+G.set('b', G.best('ballsort'));
+function make() {
+  const n = Math.min(2 + level, 8); tubes = [...Array(n)].map((_, i) => Array(CAP).fill(i)); tubes.push([], []);
+  // scramble with reverse-legal moves so the puzzle is always solvable
+  let last = null;
+  for (let k = 0; k < 400 + n * 80; k++) {
+    const a = Math.random() * tubes.length | 0, b = Math.random() * tubes.length | 0; if (a === b || !tubes[a].length || tubes[b].length >= CAP) continue;
+    const v = tubes[a][tubes[a].length - 1], below = tubes[a][tubes[a].length - 2]; if (!(below === undefined || below === v)) continue;
+    if (last && last[0] === b && last[1] === a) continue;
+    tubes[b].push(tubes[a].pop()); last = [a, b];
+  }
+  if (solved()) return make();
+  startT = tubes.map(t => t.slice()); moves = 0; hist = []; sel = -1; run = true; G.set('s', level); G.set('m', 0);
+}
+const solved = () => tubes.every(t => !t.length || (t.length === CAP && t.every(v => v === t[0])));
+function layout() { const n = tubes.length, perRow = n > 6 ? Math.ceil(n / 2) : n, rows = Math.ceil(n / perRow), tw = Math.min(64, (K.W - 20) / perRow), th = tw * .8 * CAP + 20; return { n, perRow, rows, tw, th, oy: (K.H - rows * (th + 40)) / 2 + 20 } }
+function tubePos(i) { const L = layout(), r = i / L.perRow | 0, inRow = Math.min(L.perRow, L.n - r * L.perRow), c = i % L.perRow; return { x: K.W / 2 + (c - (inRow - 1) / 2) * L.tw, y: L.oy + r * (L.th + 40), w: L.tw * .72, h: L.th, br: L.tw * .28 } }
+addEventListener('pointerdown', e => {
+  if (!run) return;
+  const i = tubes.findIndex((_, k) => { const p = tubePos(k); return Math.abs(e.clientX - p.x) < p.w * .7 && e.clientY > p.y - 30 && e.clientY < p.y + p.h + 10 }); if (i < 0) { sel = -1; return }
+  if (sel < 0) { if (tubes[i].length) { sel = i; lift = 0; G.beep(500, .04, 'triangle') } return }
+  if (sel === i) { sel = -1; return }
+  const a = tubes[sel], b = tubes[i], v = a[a.length - 1];
+  if (b.length >= CAP || (b.length && b[b.length - 1] !== v)) { G.beep(150, .1, 'sawtooth'); sel = b.length ? i : -1; return }
+  hist.push(tubes.map(t => t.slice())); while (a.length && a[a.length - 1] === v && b.length < CAP) b.push(a.pop());
+  sel = -1; moves++; G.set('m', moves); G.beep(350 + v * 50, .06, 'triangle');
+  if (solved()) { run = false; G.set('b', G.best('ballsort', level)); G.beep(900, .3, 'triangle'); setTimeout(() => G.overlay('Sorted! 🎉', 'Level ' + level + ' in ' + moves + ' moves.', 'Next level', () => { level++; make() }), 500) }
+});
+document.getElementById('undo').onclick = () => { if (run && hist.length) { tubes = hist.pop(); moves++; G.set('m', moves); sel = -1 } };
+document.getElementById('rs').onclick = () => { if (run) { tubes = startT.map(t => t.slice()); hist = []; moves = 0; sel = -1; G.set('m', 0) } };
+G.loop(dt => {
+  lift = Math.min(1, lift + dt * 8);
+  x.fillStyle = '#0b0820'; x.fillRect(0, 0, K.W, K.H); if (!tubes) return;
+  tubes.forEach((t, i) => {
+    const p = tubePos(i), full = t.length === CAP && t.every(v => v === t[0]);
+    x.strokeStyle = full ? '#4dff88' : 'rgba(207,232,255,.6)'; x.lineWidth = 3; x.shadowColor = '#4dff88'; x.shadowBlur = full ? 14 : 0;
+    x.beginPath(); x.moveTo(p.x - p.w / 2, p.y); x.lineTo(p.x - p.w / 2, p.y + p.h - p.w / 2); x.arc(p.x, p.y + p.h - p.w / 2, p.w / 2, Math.PI, 0, true); x.lineTo(p.x + p.w / 2, p.y); x.stroke(); x.shadowBlur = 0;
+    t.forEach((v, k) => { let by = p.y + p.h - p.w / 2 - k * p.br * 2.1; if (i === sel && k === t.length - 1) by = p.y - 26 - lift * 6; const g = x.createRadialGradient(p.x - p.br * .3, by - p.br * .3, 1, p.x, by, p.br); g.addColorStop(0, '#fff'); g.addColorStop(.3, CL[v]); g.addColorStop(1, CL[v]); x.fillStyle = g; x.beginPath(); x.arc(p.x, by, p.br, 0, 7); x.fill() });
+  });
+});
+make();
+G.overlay('Ball Sort', 'Tap a tube to pick up its top ball, then tap another tube to drop it.<br>You can only drop onto the same color or an empty tube.<br>Sort every tube to one color. Every level is solvable!', 'Start', () => {});
+</script></body></html>

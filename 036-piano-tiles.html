@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Piano Tiles</title><script>
+// Shared helpers for every arcade game
+const G = (() => {
+  const st = document.createElement('style');
+  st.textContent = `
+html,body{margin:0;height:100%;background:#0b0820;color:#fff;font-family:system-ui,-apple-system,sans-serif;overflow:hidden;
+  touch-action:none;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
+.hud{position:fixed;top:12px;left:0;right:0;display:flex;justify-content:space-between;padding:0 18px;font-weight:700;
+  letter-spacing:1px;z-index:5;pointer-events:none;color:#cfe8ff}
+.hud b{color:#fff;font-size:20px;text-shadow:0 0 10px #3df5ff}
+.ov{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  background:rgba(8,5,25,.85);z-index:10;text-align:center;padding:20px}
+.ov h1{margin:0 0 10px;font-size:clamp(30px,8vw,52px);background:linear-gradient(90deg,#3df5ff,#ff3df0);
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.ov p{opacity:.88;line-height:1.6;max-width:340px;margin:6px 0}
+.ov button{margin-top:18px;font:inherit;font-weight:800;font-size:18px;padding:13px 34px;border:0;border-radius:999px;
+  background:linear-gradient(90deg,#3df5ff,#ff3df0);color:#0b0820;cursor:pointer}
+`;
+  document.head.appendChild(st);
+
+  let ac;
+  function beep(f, d = .08, type = 'sine', v = .1) {
+    try {
+      ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.type = type; o.frequency.value = f;
+      g.gain.setValueAtTime(v, ac.currentTime);
+      g.gain.exponentialRampToValueAtTime(.001, ac.currentTime + d);
+      o.connect(g).connect(ac.destination); o.start(); o.stop(ac.currentTime + d);
+    } catch (e) {}
+  }
+  function getBest(k) { try { return +localStorage.getItem('arc_' + k) || 0 } catch (e) { return 0 } }
+  function setBest(k, v) { try { localStorage.setItem('arc_' + k, v) } catch (e) {} }
+  // Save if higher (or lower when lowerIsBetter). Returns current best.
+  function best(k, v, lowerIsBetter) {
+    const b = getBest(k);
+    if (v != null && (!b || (lowerIsBetter ? v < b : v > b))) { setBest(k, v); return v }
+    return b;
+  }
+  function set(id, v) { const e = document.getElementById(id); if (e) e.textContent = v }
+
+  function overlay(title, html, btn, cb) {
+    let o = document.querySelector('.ov');
+    if (!o) { o = document.createElement('div'); o.className = 'ov'; document.body.appendChild(o) }
+    o.innerHTML = `<h1>${title}</h1><p>${html}</p><button>${btn}</button>`;
+    o.style.display = 'flex';
+    o.addEventListener('pointerdown', e => e.stopPropagation());
+    o.querySelector('button').onclick = e => { e.stopPropagation(); o.style.display = 'none'; beep(440, .08, 'triangle'); cb() };
+  }
+
+  // Swipe (touch/mouse) + arrow keys / WASD → 'L','R','U','D'
+  function swipe(cb) {
+    let sx = null, sy = null;
+    addEventListener('pointerdown', e => { sx = e.clientX; sy = e.clientY });
+    addEventListener('pointerup', e => {
+      if (sx == null) return;
+      const dx = e.clientX - sx, dy = e.clientY - sy; sx = null;
+      if (Math.max(Math.abs(dx), Math.abs(dy)) < 20) return;
+      cb(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'R' : 'L') : (dy > 0 ? 'D' : 'U'));
+    });
+    addEventListener('keydown', e => {
+      const m = { ArrowLeft: 'L', ArrowRight: 'R', ArrowUp: 'U', ArrowDown: 'D', a: 'L', d: 'R', w: 'U', s: 'D' }[e.key];
+      if (m) { e.preventDefault(); cb(m) }
+    });
+  }
+
+  // Full-screen crisp canvas. Returns {c, x, W, H}; set .onresize to react.
+  function canvas() {
+    const c = document.createElement('canvas');
+    c.style.cssText = 'display:block;width:100vw;height:100vh';
+    document.body.prepend(c);
+    const o = { c, x: c.getContext('2d'), W: 0, H: 0 };
+    function r() {
+      const d = Math.min(devicePixelRatio || 1, 2);
+      o.W = innerWidth; o.H = innerHeight; c.width = o.W * d; c.height = o.H * d;
+      o.x.setTransform(d, 0, 0, d, 0, 0); o.onresize && o.onresize();
+    }
+    addEventListener('resize', r); r();
+    return o;
+  }
+
+  // Game loop with delta time (seconds, capped)
+  function loop(fn) {
+    let last = performance.now();
+    function f(t) { const dt = Math.min(.05, (t - last) / 1000); last = t; fn(dt); requestAnimationFrame(f) }
+    requestAnimationFrame(f);
+  }
+
+  return { beep, getBest, setBest, best, set, overlay, swipe, canvas, loop };
+})();
+
+</script>
+<style>.hud,.hud b{color:#0b0820!important;text-shadow:none!important}.back{color:#0b0820!important;background:rgba(255,255,255,.85)!important;border-color:rgba(0,0,0,.2)!important}</style></head><body>
+<div class="hud"><span>Score <b id="s">0</b></span><span>Best <b id="b">0</b></span></div>
+<script>
+const K = G.canvas(), x = K.x, NOTES = [262, 294, 330, 392, 440, 523, 587, 659, 784, 880];
+let rows = [], off = 0, sp = 0, run = false, score = 0, nextIdx = 0, wrong = null, melody = 0;
+G.set('b', G.best('tiles'));
+const RH = () => K.H / 4.2, CW = () => K.W / 4;
+function start() { rows = []; off = 0; score = 0; nextIdx = 0; wrong = null; for (let i = 0; i < 8; i++) rows.push({ c: Math.random() * 4 | 0, hit: 0 }); sp = 0; run = true; G.set('s', 0) }
+// row i is drawn at y = K.H - (i+1)*RH + off
+function tap(px, py) {
+  if (!run) return;
+  const i = Math.floor((K.H + off - py) / RH()), c = Math.floor(px / CW());
+  const r = rows[i]; if (!r) return;
+  if (i !== nextIdx || r.c !== c) { if (i >= nextIdx) return fail(c, i) ; return }
+  r.hit = 1; nextIdx++; score++; G.set('s', score); G.beep(NOTES[(melody++ * 3 + r.c * 2) % NOTES.length], .18, 'triangle', .14);
+  if (!sp) sp = K.H * .7;
+}
+function fail(c, i) {
+  run = false; wrong = { c, i }; G.beep(110, .5, 'sawtooth');
+  G.set('b', G.best('tiles', score)); setTimeout(() => G.overlay('Game Over', 'Score: ' + score, 'Play again', start), 800);
+}
+addEventListener('pointerdown', e => tap(e.clientX, e.clientY));
+G.loop(dt => {
+  if (run && sp) {
+    sp += K.H * .018 * dt; off += sp * dt;
+    // spawn rows above
+    while ((rows.length) * RH() - off < K.H + RH()) rows.push({ c: Math.random() * 4 | 0, hit: 0 });
+    // missed: lowest unhit row's bottom passes screen bottom
+    const yBottom = K.H - nextIdx * RH() + off;
+    if (yBottom - RH() > K.H) { wrong = { c: rows[nextIdx].c, i: nextIdx, miss: 1 }; run = false; G.beep(110, .5, 'sawtooth'); G.set('b', G.best('tiles', score)); setTimeout(() => G.overlay('Missed one!', 'Score: ' + score, 'Play again', start), 800) }
+  }
+  x.fillStyle = '#f4f1ff'; x.fillRect(0, 0, K.W, K.H);
+  const rh = RH(), cw = CW();
+  rows.forEach((r, i) => {
+    const y = K.H - (i + 1) * rh + off; if (y > K.H || y + rh < 0) return;
+    x.fillStyle = r.hit ? 'rgba(61,245,255,.35)' : (i === nextIdx && !sp ? '#2f2080' : '#0b0820');
+    x.fillRect(r.c * cw + 1, y + 1, cw - 2, rh - 2);
+    if (i === nextIdx && !sp && run) { x.fillStyle = '#ffe35a'; x.font = '800 20px system-ui'; x.textAlign = 'center'; x.fillText('START', r.c * cw + cw / 2, y + rh / 2 + 7) }
+  });
+  if (wrong) { const y = K.H - (wrong.i + 1) * rh + off; x.fillStyle = 'rgba(255,77,109,.8)'; x.fillRect(wrong.c * cw, y, cw, rh) }
+  x.strokeStyle = 'rgba(0,0,0,.12)'; x.lineWidth = 1; for (let i = 1; i < 4; i++) { x.beginPath(); x.moveTo(i * cw, 0); x.lineTo(i * cw, K.H); x.stroke() }
+});
+G.overlay('Piano Tiles', 'Tap only the black tiles, from the bottom up.<br>Don\'t tap the white space, and don\'t let a black tile slip past.<br>It speeds up as you go!', 'Start', start);
+</script></body></html>

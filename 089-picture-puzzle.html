@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Picture Puzzle</title><script>
+// Shared helpers for every arcade game
+const G = (() => {
+  const st = document.createElement('style');
+  st.textContent = `
+html,body{margin:0;height:100%;background:#0b0820;color:#fff;font-family:system-ui,-apple-system,sans-serif;overflow:hidden;
+  touch-action:none;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
+.hud{position:fixed;top:12px;left:0;right:0;display:flex;justify-content:space-between;padding:0 18px;font-weight:700;
+  letter-spacing:1px;z-index:5;pointer-events:none;color:#cfe8ff}
+.hud b{color:#fff;font-size:20px;text-shadow:0 0 10px #3df5ff}
+.ov{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  background:rgba(8,5,25,.85);z-index:10;text-align:center;padding:20px}
+.ov h1{margin:0 0 10px;font-size:clamp(30px,8vw,52px);background:linear-gradient(90deg,#3df5ff,#ff3df0);
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.ov p{opacity:.88;line-height:1.6;max-width:340px;margin:6px 0}
+.ov button{margin-top:18px;font:inherit;font-weight:800;font-size:18px;padding:13px 34px;border:0;border-radius:999px;
+  background:linear-gradient(90deg,#3df5ff,#ff3df0);color:#0b0820;cursor:pointer}
+`;
+  document.head.appendChild(st);
+
+  let ac;
+  function beep(f, d = .08, type = 'sine', v = .1) {
+    try {
+      ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.type = type; o.frequency.value = f;
+      g.gain.setValueAtTime(v, ac.currentTime);
+      g.gain.exponentialRampToValueAtTime(.001, ac.currentTime + d);
+      o.connect(g).connect(ac.destination); o.start(); o.stop(ac.currentTime + d);
+    } catch (e) {}
+  }
+  function getBest(k) { try { return +localStorage.getItem('arc_' + k) || 0 } catch (e) { return 0 } }
+  function setBest(k, v) { try { localStorage.setItem('arc_' + k, v) } catch (e) {} }
+  // Save if higher (or lower when lowerIsBetter). Returns current best.
+  function best(k, v, lowerIsBetter) {
+    const b = getBest(k);
+    if (v != null && (!b || (lowerIsBetter ? v < b : v > b))) { setBest(k, v); return v }
+    return b;
+  }
+  function set(id, v) { const e = document.getElementById(id); if (e) e.textContent = v }
+
+  function overlay(title, html, btn, cb) {
+    let o = document.querySelector('.ov');
+    if (!o) { o = document.createElement('div'); o.className = 'ov'; document.body.appendChild(o) }
+    o.innerHTML = `<h1>${title}</h1><p>${html}</p><button>${btn}</button>`;
+    o.style.display = 'flex';
+    o.addEventListener('pointerdown', e => e.stopPropagation());
+    o.querySelector('button').onclick = e => { e.stopPropagation(); o.style.display = 'none'; beep(440, .08, 'triangle'); cb() };
+  }
+
+  // Swipe (touch/mouse) + arrow keys / WASD → 'L','R','U','D'
+  function swipe(cb) {
+    let sx = null, sy = null;
+    addEventListener('pointerdown', e => { sx = e.clientX; sy = e.clientY });
+    addEventListener('pointerup', e => {
+      if (sx == null) return;
+      const dx = e.clientX - sx, dy = e.clientY - sy; sx = null;
+      if (Math.max(Math.abs(dx), Math.abs(dy)) < 20) return;
+      cb(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'R' : 'L') : (dy > 0 ? 'D' : 'U'));
+    });
+    addEventListener('keydown', e => {
+      const m = { ArrowLeft: 'L', ArrowRight: 'R', ArrowUp: 'U', ArrowDown: 'D', a: 'L', d: 'R', w: 'U', s: 'D' }[e.key];
+      if (m) { e.preventDefault(); cb(m) }
+    });
+  }
+
+  // Full-screen crisp canvas. Returns {c, x, W, H}; set .onresize to react.
+  function canvas() {
+    const c = document.createElement('canvas');
+    c.style.cssText = 'display:block;width:100vw;height:100vh';
+    document.body.prepend(c);
+    const o = { c, x: c.getContext('2d'), W: 0, H: 0 };
+    function r() {
+      const d = Math.min(devicePixelRatio || 1, 2);
+      o.W = innerWidth; o.H = innerHeight; c.width = o.W * d; c.height = o.H * d;
+      o.x.setTransform(d, 0, 0, d, 0, 0); o.onresize && o.onresize();
+    }
+    addEventListener('resize', r); r();
+    return o;
+  }
+
+  // Game loop with delta time (seconds, capped)
+  function loop(fn) {
+    let last = performance.now();
+    function f(t) { const dt = Math.min(.05, (t - last) / 1000); last = t; fn(dt); requestAnimationFrame(f) }
+    requestAnimationFrame(f);
+  }
+
+  return { beep, getBest, setBest, best, set, overlay, swipe, canvas, loop };
+})();
+
+</script>
+<style>#peek{position:fixed;right:12px;bottom:12px;z-index:20;font:inherit;font-weight:700;font-size:14px;color:#0b0820;background:#ffe35a;border:0;border-radius:999px;padding:8px 14px}</style></head><body>
+<div class="hud"><span>Picture <b id="s">1</b></span><span>Swaps <b id="m">0</b></span><span>Best <b id="b">0</b></span></div>
+<button id="peek">👁 Hold to peek</button>
+<script>
+const K = G.canvas(), x = K.x, IMG = document.createElement('canvas'), ix = IMG.getContext('2d'), SZ = 600;
+let N, order, sel = -1, swaps = 0, level = 1, run = false, peek = false, size, ox, oy, glow = [];
+IMG.width = IMG.height = SZ; G.set('b', G.best('jigsaw'));
+K.onresize = () => { size = Math.min(K.W - 20, K.H - 150); ox = (K.W - size) / 2; oy = (K.H - size) / 2 + 10 }; K.onresize();
+function paint() {
+  const h = Math.random() * 360, sky = ix.createLinearGradient(0, 0, 0, SZ); sky.addColorStop(0, `hsl(${h},70%,25%)`); sky.addColorStop(.6, `hsl(${h + 40},80%,60%)`); sky.addColorStop(1, `hsl(${h + 70},90%,70%)`);
+  ix.fillStyle = sky; ix.fillRect(0, 0, SZ, SZ);
+  ix.fillStyle = '#fff'; for (let i = 0; i < 40; i++) { ix.globalAlpha = Math.random() * .8; ix.fillRect(Math.random() * SZ, Math.random() * SZ * .4, 2, 2) } ix.globalAlpha = 1;
+  const sx = 120 + Math.random() * 360; ix.fillStyle = `hsl(${h + 60},100%,75%)`; ix.shadowColor = ix.fillStyle; ix.shadowBlur = 60; ix.beginPath(); ix.arc(sx, 230, 70, 0, 7); ix.fill(); ix.shadowBlur = 0;
+  for (let L = 0; L < 3; L++) { ix.fillStyle = `hsl(${h + 200 + L * 20},40%,${30 - L * 8}%)`; ix.beginPath(); ix.moveTo(0, SZ); let px = 0; while (px <= SZ) { ix.lineTo(px, 300 + L * 90 + Math.random() * 80 - 40); px += 60 + Math.random() * 60 } ix.lineTo(SZ, SZ); ix.fill() }
+  const em = ['🌲', '🏠', '⛺', '🐄', '🦌', '🌳', '🚲', '⛵'], k = 3 + (Math.random() * 3 | 0); ix.textAlign = 'center'; ix.textBaseline = 'middle';
+  for (let i = 0; i < k; i++) { ix.font = `${50 + Math.random() * 50}px system-ui`; ix.fillText(em[Math.random() * em.length | 0], 60 + Math.random() * 480, 430 + Math.random() * 130) }
+  ix.font = '70px system-ui'; ix.fillText(['🦅', '🎈', '🛸', '🌙', '☁️'][Math.random() * 5 | 0], 80 + Math.random() * 440, 90 + Math.random() * 100);
+}
+function make() { N = Math.min(3 + (level / 2 | 0), 6); paint(); order = [...Array(N * N).keys()]; do order.sort(() => Math.random() - .5); while (order.every((v, i) => v === i)); swaps = 0; sel = -1; run = true; G.set('s', level); G.set('m', 0) }
+addEventListener('pointerdown', e => {
+  if (!run) return; const c = Math.floor((e.clientX - ox) / (size / N)), r = Math.floor((e.clientY - oy) / (size / N)); if (r < 0 || c < 0 || r >= N || c >= N) return;
+  const i = r * N + c; if (order[i] === i) return; if (sel < 0) { sel = i; G.beep(500, .04, 'triangle'); return } if (sel === i) { sel = -1; return }
+  [order[sel], order[i]] = [order[i], order[sel]]; swaps++; G.set('m', swaps); [sel, i].forEach(k => { if (order[k] === k) { glow.push({ k, life: 1 }); G.beep(800, .08, 'triangle') } }); G.beep(400, .05, 'square', .04); sel = -1;
+  if (order.every((v, k) => v === k)) { run = false; G.set('b', G.best('jigsaw', level)); G.beep(1000, .3, 'triangle'); setTimeout(() => G.overlay('Picture complete! 🖼️', 'Solved in ' + swaps + ' swaps.', 'Next picture', () => { level++; make() }), 700) }
+});
+const pk = document.getElementById('peek'); pk.addEventListener('pointerdown', e => { e.stopPropagation(); peek = true }); ['pointerup', 'pointerleave', 'pointercancel'].forEach(ev => pk.addEventListener(ev, () => peek = false));
+G.loop(dt => {
+  for (const g of glow) g.life -= dt * 2; glow = glow.filter(g => g.life > 0);
+  x.fillStyle = '#0b0820'; x.fillRect(0, 0, K.W, K.H); if (!order) return;
+  const t = size / N, s = SZ / N;
+  if (peek || !run) x.drawImage(IMG, ox, oy, size, size);
+  else order.forEach((p, i) => { const r = i / N | 0, c = i % N, pr = p / N | 0, pc = p % N; x.drawImage(IMG, pc * s, pr * s, s, s, ox + c * t, oy + r * t, t, t); if (p !== i) { x.strokeStyle = 'rgba(0,0,0,.6)'; x.lineWidth = 2; x.strokeRect(ox + c * t + 1, oy + r * t + 1, t - 2, t - 2) } });
+  if (sel >= 0 && run && !peek) { x.strokeStyle = '#ffe35a'; x.lineWidth = 4; x.strokeRect(ox + (sel % N) * t + 2, oy + (sel / N | 0) * t + 2, t - 4, t - 4) }
+  for (const g of glow) { x.fillStyle = `rgba(77,255,136,${g.life * .5})`; x.fillRect(ox + (g.k % N) * t, oy + (g.k / N | 0) * t, t, t) }
+});
+make();
+G.overlay('Picture Puzzle', 'The picture is cut into mixed-up squares.<br>Tap two squares to swap them. Squares in the right place lock in.<br>Hold 👁 to peek at the finished picture.', 'Start', () => {});
+</script></body></html>

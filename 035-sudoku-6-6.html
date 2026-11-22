@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Sudoku 6×6</title><script>
+// Shared helpers for every arcade game
+const G = (() => {
+  const st = document.createElement('style');
+  st.textContent = `
+html,body{margin:0;height:100%;background:#0b0820;color:#fff;font-family:system-ui,-apple-system,sans-serif;overflow:hidden;
+  touch-action:none;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
+.hud{position:fixed;top:12px;left:0;right:0;display:flex;justify-content:space-between;padding:0 18px;font-weight:700;
+  letter-spacing:1px;z-index:5;pointer-events:none;color:#cfe8ff}
+.hud b{color:#fff;font-size:20px;text-shadow:0 0 10px #3df5ff}
+.ov{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  background:rgba(8,5,25,.85);z-index:10;text-align:center;padding:20px}
+.ov h1{margin:0 0 10px;font-size:clamp(30px,8vw,52px);background:linear-gradient(90deg,#3df5ff,#ff3df0);
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.ov p{opacity:.88;line-height:1.6;max-width:340px;margin:6px 0}
+.ov button{margin-top:18px;font:inherit;font-weight:800;font-size:18px;padding:13px 34px;border:0;border-radius:999px;
+  background:linear-gradient(90deg,#3df5ff,#ff3df0);color:#0b0820;cursor:pointer}
+`;
+  document.head.appendChild(st);
+
+  let ac;
+  function beep(f, d = .08, type = 'sine', v = .1) {
+    try {
+      ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.type = type; o.frequency.value = f;
+      g.gain.setValueAtTime(v, ac.currentTime);
+      g.gain.exponentialRampToValueAtTime(.001, ac.currentTime + d);
+      o.connect(g).connect(ac.destination); o.start(); o.stop(ac.currentTime + d);
+    } catch (e) {}
+  }
+  function getBest(k) { try { return +localStorage.getItem('arc_' + k) || 0 } catch (e) { return 0 } }
+  function setBest(k, v) { try { localStorage.setItem('arc_' + k, v) } catch (e) {} }
+  // Save if higher (or lower when lowerIsBetter). Returns current best.
+  function best(k, v, lowerIsBetter) {
+    const b = getBest(k);
+    if (v != null && (!b || (lowerIsBetter ? v < b : v > b))) { setBest(k, v); return v }
+    return b;
+  }
+  function set(id, v) { const e = document.getElementById(id); if (e) e.textContent = v }
+
+  function overlay(title, html, btn, cb) {
+    let o = document.querySelector('.ov');
+    if (!o) { o = document.createElement('div'); o.className = 'ov'; document.body.appendChild(o) }
+    o.innerHTML = `<h1>${title}</h1><p>${html}</p><button>${btn}</button>`;
+    o.style.display = 'flex';
+    o.addEventListener('pointerdown', e => e.stopPropagation());
+    o.querySelector('button').onclick = e => { e.stopPropagation(); o.style.display = 'none'; beep(440, .08, 'triangle'); cb() };
+  }
+
+  // Swipe (touch/mouse) + arrow keys / WASD → 'L','R','U','D'
+  function swipe(cb) {
+    let sx = null, sy = null;
+    addEventListener('pointerdown', e => { sx = e.clientX; sy = e.clientY });
+    addEventListener('pointerup', e => {
+      if (sx == null) return;
+      const dx = e.clientX - sx, dy = e.clientY - sy; sx = null;
+      if (Math.max(Math.abs(dx), Math.abs(dy)) < 20) return;
+      cb(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'R' : 'L') : (dy > 0 ? 'D' : 'U'));
+    });
+    addEventListener('keydown', e => {
+      const m = { ArrowLeft: 'L', ArrowRight: 'R', ArrowUp: 'U', ArrowDown: 'D', a: 'L', d: 'R', w: 'U', s: 'D' }[e.key];
+      if (m) { e.preventDefault(); cb(m) }
+    });
+  }
+
+  // Full-screen crisp canvas. Returns {c, x, W, H}; set .onresize to react.
+  function canvas() {
+    const c = document.createElement('canvas');
+    c.style.cssText = 'display:block;width:100vw;height:100vh';
+    document.body.prepend(c);
+    const o = { c, x: c.getContext('2d'), W: 0, H: 0 };
+    function r() {
+      const d = Math.min(devicePixelRatio || 1, 2);
+      o.W = innerWidth; o.H = innerHeight; c.width = o.W * d; c.height = o.H * d;
+      o.x.setTransform(d, 0, 0, d, 0, 0); o.onresize && o.onresize();
+    }
+    addEventListener('resize', r); r();
+    return o;
+  }
+
+  // Game loop with delta time (seconds, capped)
+  function loop(fn) {
+    let last = performance.now();
+    function f(t) { const dt = Math.min(.05, (t - last) / 1000); last = t; fn(dt); requestAnimationFrame(f) }
+    requestAnimationFrame(f);
+  }
+
+  return { beep, getBest, setBest, best, set, overlay, swipe, canvas, loop };
+})();
+
+</script>
+<style>
+#g{position:fixed;left:50%;top:44%;transform:translate(-50%,-50%);width:min(92vw,56vh,420px);aspect-ratio:1;display:grid;
+  grid-template-columns:repeat(6,1fr);background:#3df5ff;gap:1px;border:3px solid #3df5ff;border-radius:8px;overflow:hidden}
+.c{background:#130d2c;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:clamp(20px,7vw,34px);color:#3df5ff;cursor:pointer}
+.c.giv{color:#fff;background:#1d1550}
+.c.sel{background:#3a2a90}.c.same{background:#2a1f6a}
+.c.err{color:#ff4d6d}
+.c.br{margin-right:2px}.c.bb{margin-bottom:2px}
+#pad{position:fixed;left:50%;bottom:62px;transform:translateX(-50%);display:grid;grid-template-columns:repeat(7,1fr);gap:6px;width:min(94vw,420px)}
+#pad button{font:inherit;font-weight:900;font-size:22px;padding:12px 0;border:0;border-radius:12px;background:#2f2080;color:#fff}
+</style></head><body>
+<div class="hud"><span>Time <b id="t">0</b></span><span>Best <b id="b">–</b></span></div>
+<div id="g"></div><div id="pad"></div>
+<script>
+const N = 6, g = document.getElementById('g'), pad = document.getElementById('pad'), els = [];
+let sol, given, cur, sel = -1, time = 0, run = false;
+const showBest = () => G.set('b', G.best('sudoku', null, true) ? G.best('sudoku', null, true) + 's' : '–'); showBest();
+for (let i = 0; i < 36; i++) { const d = document.createElement('div'); d.className = 'c'; d.onclick = () => { sel = i; render() }; g.appendChild(d); els.push(d) }
+[1, 2, 3, 4, 5, 6, '⌫'].forEach(v => { const b = document.createElement('button'); b.textContent = v; b.onclick = () => put(v === '⌫' ? 0 : v); pad.appendChild(b) });
+const sh = a => a.sort(() => Math.random() - .5);
+function make() {
+  const digits = sh([1, 2, 3, 4, 5, 6]);
+  const rows = [].concat(...sh([0, 1, 2]).map(b => sh([0, 1]).map(r => b * 2 + r)));
+  const cols = [].concat(...sh([0, 1]).map(s => sh([0, 1, 2]).map(c => s * 3 + c)));
+  sol = []; for (const r of rows) for (const c of cols) sol.push(digits[(3 * (r % 2) + (r / 2 | 0) + c) % 6]);
+  given = sol.map(() => true); sh([...Array(36).keys()]).slice(0, 18).forEach(i => given[i] = false);
+  cur = sol.map((v, i) => given[i] ? v : 0); sel = -1; time = 0; run = true; render();
+}
+function bad(i) {
+  const v = cur[i]; if (!v) return false; const r = i / 6 | 0, c = i % 6;
+  for (let j = 0; j < 36; j++) { if (j === i || cur[j] !== v) continue; const rr = j / 6 | 0, cc = j % 6; if (rr === r || cc === c || ((rr / 2 | 0) === (r / 2 | 0) && (cc / 3 | 0) === (c / 3 | 0))) return true }
+  return false;
+}
+function render() {
+  els.forEach((d, i) => {
+    d.textContent = cur[i] || ''; d.className = 'c' + (given[i] ? ' giv' : '') + (i === sel ? ' sel' : (sel >= 0 && cur[sel] && cur[i] === cur[sel] ? ' same' : '')) + (bad(i) ? ' err' : '');
+    if (i % 6 === 2) d.classList.add('br'); if ((i / 6 | 0) % 2 === 1 && (i / 6 | 0) < 5) d.classList.add('bb');
+  });
+}
+function put(v) {
+  if (!run || sel < 0 || given[sel]) return; cur[sel] = v; G.beep(v ? 400 + v * 60 : 200, .05, 'triangle'); render();
+  if (cur.every(Boolean) && !cur.some((_, i) => bad(i))) {
+    run = false; const s = Math.ceil(time); G.best('sudoku', s, true); showBest(); G.beep(900, .3, 'triangle');
+    setTimeout(() => G.overlay('Solved! 🎉', 'Time: ' + s + ' seconds.', 'New puzzle', make), 400);
+  }
+}
+addEventListener('keydown', e => { if (e.key >= '1' && e.key <= '6') put(+e.key); if (e.key == 'Backspace') put(0) });
+G.loop(dt => { if (run) { time += dt; G.set('t', Math.floor(time)) } });
+make();
+G.overlay('Sudoku 6×6', 'Fill every row, column and box with 1 to 6.<br>No number can repeat in a row, column or 2×3 box.<br>Tap a square, then tap a number. Red = clash.', 'Start', () => { time = 0 });
+</script></body></html>

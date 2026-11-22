@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Flashlight Hunt</title><script>
+// Shared helpers for every arcade game
+const G = (() => {
+  const st = document.createElement('style');
+  st.textContent = `
+html,body{margin:0;height:100%;background:#0b0820;color:#fff;font-family:system-ui,-apple-system,sans-serif;overflow:hidden;
+  touch-action:none;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
+.hud{position:fixed;top:12px;left:0;right:0;display:flex;justify-content:space-between;padding:0 18px;font-weight:700;
+  letter-spacing:1px;z-index:5;pointer-events:none;color:#cfe8ff}
+.hud b{color:#fff;font-size:20px;text-shadow:0 0 10px #3df5ff}
+.ov{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  background:rgba(8,5,25,.85);z-index:10;text-align:center;padding:20px}
+.ov h1{margin:0 0 10px;font-size:clamp(30px,8vw,52px);background:linear-gradient(90deg,#3df5ff,#ff3df0);
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.ov p{opacity:.88;line-height:1.6;max-width:340px;margin:6px 0}
+.ov button{margin-top:18px;font:inherit;font-weight:800;font-size:18px;padding:13px 34px;border:0;border-radius:999px;
+  background:linear-gradient(90deg,#3df5ff,#ff3df0);color:#0b0820;cursor:pointer}
+`;
+  document.head.appendChild(st);
+
+  let ac;
+  function beep(f, d = .08, type = 'sine', v = .1) {
+    try {
+      ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.type = type; o.frequency.value = f;
+      g.gain.setValueAtTime(v, ac.currentTime);
+      g.gain.exponentialRampToValueAtTime(.001, ac.currentTime + d);
+      o.connect(g).connect(ac.destination); o.start(); o.stop(ac.currentTime + d);
+    } catch (e) {}
+  }
+  function getBest(k) { try { return +localStorage.getItem('arc_' + k) || 0 } catch (e) { return 0 } }
+  function setBest(k, v) { try { localStorage.setItem('arc_' + k, v) } catch (e) {} }
+  // Save if higher (or lower when lowerIsBetter). Returns current best.
+  function best(k, v, lowerIsBetter) {
+    const b = getBest(k);
+    if (v != null && (!b || (lowerIsBetter ? v < b : v > b))) { setBest(k, v); return v }
+    return b;
+  }
+  function set(id, v) { const e = document.getElementById(id); if (e) e.textContent = v }
+
+  function overlay(title, html, btn, cb) {
+    let o = document.querySelector('.ov');
+    if (!o) { o = document.createElement('div'); o.className = 'ov'; document.body.appendChild(o) }
+    o.innerHTML = `<h1>${title}</h1><p>${html}</p><button>${btn}</button>`;
+    o.style.display = 'flex';
+    o.addEventListener('pointerdown', e => e.stopPropagation());
+    o.querySelector('button').onclick = e => { e.stopPropagation(); o.style.display = 'none'; beep(440, .08, 'triangle'); cb() };
+  }
+
+  // Swipe (touch/mouse) + arrow keys / WASD → 'L','R','U','D'
+  function swipe(cb) {
+    let sx = null, sy = null;
+    addEventListener('pointerdown', e => { sx = e.clientX; sy = e.clientY });
+    addEventListener('pointerup', e => {
+      if (sx == null) return;
+      const dx = e.clientX - sx, dy = e.clientY - sy; sx = null;
+      if (Math.max(Math.abs(dx), Math.abs(dy)) < 20) return;
+      cb(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'R' : 'L') : (dy > 0 ? 'D' : 'U'));
+    });
+    addEventListener('keydown', e => {
+      const m = { ArrowLeft: 'L', ArrowRight: 'R', ArrowUp: 'U', ArrowDown: 'D', a: 'L', d: 'R', w: 'U', s: 'D' }[e.key];
+      if (m) { e.preventDefault(); cb(m) }
+    });
+  }
+
+  // Full-screen crisp canvas. Returns {c, x, W, H}; set .onresize to react.
+  function canvas() {
+    const c = document.createElement('canvas');
+    c.style.cssText = 'display:block;width:100vw;height:100vh';
+    document.body.prepend(c);
+    const o = { c, x: c.getContext('2d'), W: 0, H: 0 };
+    function r() {
+      const d = Math.min(devicePixelRatio || 1, 2);
+      o.W = innerWidth; o.H = innerHeight; c.width = o.W * d; c.height = o.H * d;
+      o.x.setTransform(d, 0, 0, d, 0, 0); o.onresize && o.onresize();
+    }
+    addEventListener('resize', r); r();
+    return o;
+  }
+
+  // Game loop with delta time (seconds, capped)
+  function loop(fn) {
+    let last = performance.now();
+    function f(t) { const dt = Math.min(.05, (t - last) / 1000); last = t; fn(dt); requestAnimationFrame(f) }
+    requestAnimationFrame(f);
+  }
+
+  return { beep, getBest, setBest, best, set, overlay, swipe, canvas, loop };
+})();
+
+</script>
+<style>#find{position:fixed;left:0;right:0;bottom:58px;text-align:center;font-size:28px;letter-spacing:6px;z-index:6;pointer-events:none}
+#find span.got{opacity:.2}</style></head><body>
+<div class="hud"><span>Room <b id="s">1</b></span><span>Time <b id="t">45</b></span><span>Best <b id="b">0</b></span></div>
+<div id="find"></div>
+<script>
+const K = G.canvas(), x = K.x, POOL = ['🔑', '🧸', '🎩', '👓', '⌚', '📱', '🪙', '💍', '🧦', '🎧', '📷', '🔦', '🍪', '🐱', '🦆', '🎲', '🧩', '✏️', '📚', '🪴', '🕯️', '🧤', '🎁', '🍌'];
+let items = [], want = [], light = null, level = 1, time = 0, run = false, fx = [], t = 0;
+G.set('b', G.best('flashlight'));
+function room() {
+  const n = Math.min(12 + level * 3, 30), pool = POOL.slice().sort(() => Math.random() - .5).slice(0, n); items = [];
+  pool.forEach(e => { let p, k = 0; do { p = { x: 30 + Math.random() * (K.W - 60), y: 80 + Math.random() * (K.H - 200) }; k++ } while (k < 80 && items.some(o => Math.hypot(o.x - p.x, o.y - p.y) < 46)); items.push({ e, ...p, s: 26 + Math.random() * 12, rot: (Math.random() - .5) * .8 }) });
+  want = items.slice().sort(() => Math.random() - .5).slice(0, Math.min(3 + (level / 2 | 0), 6)).map(o => o.e); time = Math.max(25, 50 - level * 2); renderFind(); G.set('s', level);
+}
+function renderFind() { document.getElementById('find').innerHTML = want.map(e => `<span class="${items.find(o => o.e === e) ? '' : 'got'}">${e}</span>`).join('') }
+function start() { level = 1; run = true; room() }
+addEventListener('pointerdown', e => {
+  light = { x: e.clientX, y: e.clientY }; if (!run) return;
+  const o = items.find(o => Math.hypot(o.x - e.clientX, o.y - e.clientY) < o.s * .8);
+  if (o && want.includes(o.e)) { items = items.filter(q => q !== o); fx.push({ x: o.x, y: o.y, e: o.e, life: 1 }); G.beep(900, .12, 'triangle'); renderFind();
+    if (want.every(e => !items.find(q => q.e === e))) { run = false; G.set('b', G.best('flashlight', level)); G.beep(1100, .3, 'triangle'); setTimeout(() => G.overlay('Room cleared! 🔦', 'You found everything with ' + Math.ceil(time) + ' seconds left.', 'Next room', () => { level++; run = true; room() }), 600) } }
+  else if (o) { time -= 2; fx.push({ x: o.x, y: o.y, e: '✗', life: 1, bad: 1 }); G.beep(150, .15, 'sawtooth') }
+});
+addEventListener('pointermove', e => { light = { x: e.clientX, y: e.clientY } });
+G.loop(dt => {
+  t += dt; for (const f of fx) { f.y -= 50 * dt; f.life -= dt * 1.5 } fx = fx.filter(f => f.life > 0);
+  if (run) { time -= dt; G.set('t', Math.max(0, Math.ceil(time))); if (time <= 0) { run = false; G.overlay("Time's up!", 'You reached room ' + level + '.', 'Play again', start) } }
+  x.fillStyle = '#2a1f3a'; x.fillRect(0, 0, K.W, K.H);
+  x.fillStyle = '#3a2c50'; for (let i = 0; i < K.W; i += 40) x.fillRect(i, 0, 2, K.H);
+  x.textAlign = 'center'; x.textBaseline = 'middle'; x.fillStyle = '#fff';
+  for (const o of items) { x.save(); x.translate(o.x, o.y); x.rotate(o.rot); x.font = o.s + 'px system-ui'; x.fillText(o.e, 0, 0); x.restore() }
+  // darkness with a hole
+  const L = light || { x: K.W / 2, y: K.H / 2 }, R = Math.min(K.W, K.H) * .17 + Math.sin(t * 7) * 2;
+  const g = x.createRadialGradient(L.x, L.y, R * .55, L.x, L.y, R); g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(1, 'rgba(3,2,8,.985)');
+  x.fillStyle = g; x.fillRect(0, 0, K.W, K.H);
+  x.fillStyle = 'rgba(3,2,8,.985)'; x.beginPath(); x.rect(0, 0, K.W, K.H); x.arc(L.x, L.y, R, 0, 7, true); x.fill();
+  for (const f of fx) { x.globalAlpha = f.life; x.font = '34px system-ui'; x.fillStyle = f.bad ? '#ff4d6d' : '#fff'; x.fillText(f.e, f.x, f.y) } x.globalAlpha = 1;
+  if (run && !light) { x.fillStyle = '#ffe35a'; x.font = '800 16px system-ui'; x.fillText('Drag your finger to shine the light', K.W / 2, K.H * .3) }
+});
+G.overlay('Flashlight Hunt', 'The room is dark! Drag your finger to shine your flashlight.<br>Find the items shown at the bottom and tap them.<br>Tapping the wrong item costs 2 seconds.', 'Start', start);
+</script></body></html>

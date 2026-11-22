@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Bubble Pop</title><script>
+// Shared helpers for every arcade game
+const G = (() => {
+  const st = document.createElement('style');
+  st.textContent = `
+html,body{margin:0;height:100%;background:#0b0820;color:#fff;font-family:system-ui,-apple-system,sans-serif;overflow:hidden;
+  touch-action:none;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
+.hud{position:fixed;top:12px;left:0;right:0;display:flex;justify-content:space-between;padding:0 18px;font-weight:700;
+  letter-spacing:1px;z-index:5;pointer-events:none;color:#cfe8ff}
+.hud b{color:#fff;font-size:20px;text-shadow:0 0 10px #3df5ff}
+.ov{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  background:rgba(8,5,25,.85);z-index:10;text-align:center;padding:20px}
+.ov h1{margin:0 0 10px;font-size:clamp(30px,8vw,52px);background:linear-gradient(90deg,#3df5ff,#ff3df0);
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.ov p{opacity:.88;line-height:1.6;max-width:340px;margin:6px 0}
+.ov button{margin-top:18px;font:inherit;font-weight:800;font-size:18px;padding:13px 34px;border:0;border-radius:999px;
+  background:linear-gradient(90deg,#3df5ff,#ff3df0);color:#0b0820;cursor:pointer}
+`;
+  document.head.appendChild(st);
+
+  let ac;
+  function beep(f, d = .08, type = 'sine', v = .1) {
+    try {
+      ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.type = type; o.frequency.value = f;
+      g.gain.setValueAtTime(v, ac.currentTime);
+      g.gain.exponentialRampToValueAtTime(.001, ac.currentTime + d);
+      o.connect(g).connect(ac.destination); o.start(); o.stop(ac.currentTime + d);
+    } catch (e) {}
+  }
+  function getBest(k) { try { return +localStorage.getItem('arc_' + k) || 0 } catch (e) { return 0 } }
+  function setBest(k, v) { try { localStorage.setItem('arc_' + k, v) } catch (e) {} }
+  // Save if higher (or lower when lowerIsBetter). Returns current best.
+  function best(k, v, lowerIsBetter) {
+    const b = getBest(k);
+    if (v != null && (!b || (lowerIsBetter ? v < b : v > b))) { setBest(k, v); return v }
+    return b;
+  }
+  function set(id, v) { const e = document.getElementById(id); if (e) e.textContent = v }
+
+  function overlay(title, html, btn, cb) {
+    let o = document.querySelector('.ov');
+    if (!o) { o = document.createElement('div'); o.className = 'ov'; document.body.appendChild(o) }
+    o.innerHTML = `<h1>${title}</h1><p>${html}</p><button>${btn}</button>`;
+    o.style.display = 'flex';
+    o.addEventListener('pointerdown', e => e.stopPropagation());
+    o.querySelector('button').onclick = e => { e.stopPropagation(); o.style.display = 'none'; beep(440, .08, 'triangle'); cb() };
+  }
+
+  // Swipe (touch/mouse) + arrow keys / WASD → 'L','R','U','D'
+  function swipe(cb) {
+    let sx = null, sy = null;
+    addEventListener('pointerdown', e => { sx = e.clientX; sy = e.clientY });
+    addEventListener('pointerup', e => {
+      if (sx == null) return;
+      const dx = e.clientX - sx, dy = e.clientY - sy; sx = null;
+      if (Math.max(Math.abs(dx), Math.abs(dy)) < 20) return;
+      cb(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'R' : 'L') : (dy > 0 ? 'D' : 'U'));
+    });
+    addEventListener('keydown', e => {
+      const m = { ArrowLeft: 'L', ArrowRight: 'R', ArrowUp: 'U', ArrowDown: 'D', a: 'L', d: 'R', w: 'U', s: 'D' }[e.key];
+      if (m) { e.preventDefault(); cb(m) }
+    });
+  }
+
+  // Full-screen crisp canvas. Returns {c, x, W, H}; set .onresize to react.
+  function canvas() {
+    const c = document.createElement('canvas');
+    c.style.cssText = 'display:block;width:100vw;height:100vh';
+    document.body.prepend(c);
+    const o = { c, x: c.getContext('2d'), W: 0, H: 0 };
+    function r() {
+      const d = Math.min(devicePixelRatio || 1, 2);
+      o.W = innerWidth; o.H = innerHeight; c.width = o.W * d; c.height = o.H * d;
+      o.x.setTransform(d, 0, 0, d, 0, 0); o.onresize && o.onresize();
+    }
+    addEventListener('resize', r); r();
+    return o;
+  }
+
+  // Game loop with delta time (seconds, capped)
+  function loop(fn) {
+    let last = performance.now();
+    function f(t) { const dt = Math.min(.05, (t - last) / 1000); last = t; fn(dt); requestAnimationFrame(f) }
+    requestAnimationFrame(f);
+  }
+
+  return { beep, getBest, setBest, best, set, overlay, swipe, canvas, loop };
+})();
+
+</script></head><body>
+<div class="hud"><span>Score <b id="s">0</b></span><span>Time <b id="t">40</b></span><span>Best <b id="b">0</b></span></div>
+<script>
+const K = G.canvas(), x = K.x;
+let bub = [], parts = [], texts = [], score = 0, time = 0, run = false, spawn = 0, t = 0;
+G.set('b', G.best('bubbles'));
+function start() { bub = []; score = 0; time = 40; t = 0; spawn = 0; run = true; G.set('s', 0) }
+function add() {
+  const roll = Math.random(), type = roll < .08 ? 'gold' : roll < .22 ? 'spike' : 'n';
+  const r = type == 'gold' ? 22 : 18 + Math.random() * 26;
+  bub.push({ x: r + Math.random() * (K.W - r * 2), y: K.H + r, r, vy: 60 + Math.random() * 60 + t * 2, ph: Math.random() * 7, type, hue: Math.random() * 360 });
+}
+function pop(b, gain, col) {
+  b.dead = 1; for (let i = 0; i < 12; i++) { const a = Math.random() * 7, v = 60 + Math.random() * 140; parts.push({ x: b.x, y: b.y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, life: 1, col }) }
+  texts.push({ x: b.x, y: b.y, s: (gain > 0 ? '+' : '') + gain, life: 1, col });
+}
+addEventListener('pointerdown', e => {
+  if (!run) return;
+  for (let i = bub.length - 1; i >= 0; i--) {
+    const b = bub[i]; if (b.dead || Math.hypot(e.clientX - b.x, e.clientY - b.y) > b.r + 8) continue;
+    if (b.type == 'spike') { score = Math.max(0, score - 5); pop(b, -5, '#ff4d6d'); G.beep(140, .2, 'sawtooth') }
+    else if (b.type == 'gold') { score += 5; time += 3; pop(b, 5, '#ffe35a'); G.beep(1000, .12, 'triangle') }
+    else { const g = b.r < 26 ? 3 : b.r < 34 ? 2 : 1; score += g; pop(b, g, `hsl(${b.hue},90%,65%)`); G.beep(500 + (60 - b.r) * 10, .05, 'sine', .12) }
+    G.set('s', score); break;
+  }
+});
+G.loop(dt => {
+  for (const p of parts) { p.x += p.vx * dt; p.y += p.vy * dt; p.life -= dt * 2 } parts = parts.filter(p => p.life > 0);
+  for (const p of texts) { p.y -= 50 * dt; p.life -= dt * 1.3 } texts = texts.filter(p => p.life > 0);
+  if (run) {
+    t += dt; time -= dt; G.set('t', Math.max(0, Math.ceil(time)));
+    spawn -= dt; if (spawn <= 0) { add(); spawn = Math.max(.18, .55 - t * .008) }
+    for (const b of bub) { b.y -= b.vy * dt; b.ph += dt * 2 }
+    bub = bub.filter(b => !b.dead && b.y > -b.r * 2);
+    if (time <= 0) { run = false; bub = []; G.set('b', G.best('bubbles', score)); G.overlay("Time's up!", 'Score: ' + score, 'Play again', start) }
+  }
+  const bg = x.createLinearGradient(0, 0, 0, K.H); bg.addColorStop(0, '#0b2a4a'); bg.addColorStop(1, '#0b0820'); x.fillStyle = bg; x.fillRect(0, 0, K.W, K.H);
+  for (const b of bub) {
+    const bx = b.x + Math.sin(b.ph) * 8;
+    if (b.type == 'spike') {
+      x.fillStyle = '#ff4d6d'; x.beginPath();
+      for (let i = 0; i < 24; i++) { const a = i * Math.PI / 12, rr = i % 2 ? b.r * .75 : b.r; x.lineTo(bx + Math.cos(a) * rr, b.y + Math.sin(a) * rr) }
+      x.fill(); x.fillStyle = '#fff'; x.font = '800 16px system-ui'; x.textAlign = 'center'; x.textBaseline = 'middle'; x.fillText('✕', bx, b.y);
+    } else {
+      const c = b.type == 'gold' ? '#ffe35a' : `hsl(${b.hue},90%,65%)`;
+      const gr = x.createRadialGradient(bx - b.r * .3, b.y - b.r * .3, b.r * .1, bx, b.y, b.r);
+      gr.addColorStop(0, 'rgba(255,255,255,.85)'); gr.addColorStop(.3, c); gr.addColorStop(1, 'rgba(255,255,255,.08)');
+      x.fillStyle = gr; x.beginPath(); x.arc(bx, b.y, b.r, 0, 7); x.fill();
+      if (b.type == 'gold') { x.fillStyle = '#0b0820'; x.font = '800 14px system-ui'; x.textAlign = 'center'; x.textBaseline = 'middle'; x.fillText('+3s', bx, b.y) }
+    }
+    b.dx = bx;
+  }
+  for (const p of parts) { x.globalAlpha = p.life; x.fillStyle = p.col; x.fillRect(p.x - 2, p.y - 2, 4, 4) }
+  x.font = '800 20px system-ui'; x.textAlign = 'center';
+  for (const p of texts) { x.globalAlpha = p.life; x.fillStyle = p.col; x.fillText(p.s, p.x, p.y) } x.globalAlpha = 1;
+});
+G.overlay('Bubble Pop', 'Tap bubbles before they float away.<br>Small bubbles = more points. Gold = +5 and +3 seconds.<br>Don\'t tap the red spiky ones (−5)!', 'Start', start);
+</script></body></html>

@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Reversi</title><script>
+// Shared helpers for every arcade game
+const G = (() => {
+  const st = document.createElement('style');
+  st.textContent = `
+html,body{margin:0;height:100%;background:#0b0820;color:#fff;font-family:system-ui,-apple-system,sans-serif;overflow:hidden;
+  touch-action:none;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
+.hud{position:fixed;top:12px;left:0;right:0;display:flex;justify-content:space-between;padding:0 18px;font-weight:700;
+  letter-spacing:1px;z-index:5;pointer-events:none;color:#cfe8ff}
+.hud b{color:#fff;font-size:20px;text-shadow:0 0 10px #3df5ff}
+.ov{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  background:rgba(8,5,25,.85);z-index:10;text-align:center;padding:20px}
+.ov h1{margin:0 0 10px;font-size:clamp(30px,8vw,52px);background:linear-gradient(90deg,#3df5ff,#ff3df0);
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.ov p{opacity:.88;line-height:1.6;max-width:340px;margin:6px 0}
+.ov button{margin-top:18px;font:inherit;font-weight:800;font-size:18px;padding:13px 34px;border:0;border-radius:999px;
+  background:linear-gradient(90deg,#3df5ff,#ff3df0);color:#0b0820;cursor:pointer}
+`;
+  document.head.appendChild(st);
+
+  let ac;
+  function beep(f, d = .08, type = 'sine', v = .1) {
+    try {
+      ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.type = type; o.frequency.value = f;
+      g.gain.setValueAtTime(v, ac.currentTime);
+      g.gain.exponentialRampToValueAtTime(.001, ac.currentTime + d);
+      o.connect(g).connect(ac.destination); o.start(); o.stop(ac.currentTime + d);
+    } catch (e) {}
+  }
+  function getBest(k) { try { return +localStorage.getItem('arc_' + k) || 0 } catch (e) { return 0 } }
+  function setBest(k, v) { try { localStorage.setItem('arc_' + k, v) } catch (e) {} }
+  // Save if higher (or lower when lowerIsBetter). Returns current best.
+  function best(k, v, lowerIsBetter) {
+    const b = getBest(k);
+    if (v != null && (!b || (lowerIsBetter ? v < b : v > b))) { setBest(k, v); return v }
+    return b;
+  }
+  function set(id, v) { const e = document.getElementById(id); if (e) e.textContent = v }
+
+  function overlay(title, html, btn, cb) {
+    let o = document.querySelector('.ov');
+    if (!o) { o = document.createElement('div'); o.className = 'ov'; document.body.appendChild(o) }
+    o.innerHTML = `<h1>${title}</h1><p>${html}</p><button>${btn}</button>`;
+    o.style.display = 'flex';
+    o.addEventListener('pointerdown', e => e.stopPropagation());
+    o.querySelector('button').onclick = e => { e.stopPropagation(); o.style.display = 'none'; beep(440, .08, 'triangle'); cb() };
+  }
+
+  // Swipe (touch/mouse) + arrow keys / WASD → 'L','R','U','D'
+  function swipe(cb) {
+    let sx = null, sy = null;
+    addEventListener('pointerdown', e => { sx = e.clientX; sy = e.clientY });
+    addEventListener('pointerup', e => {
+      if (sx == null) return;
+      const dx = e.clientX - sx, dy = e.clientY - sy; sx = null;
+      if (Math.max(Math.abs(dx), Math.abs(dy)) < 20) return;
+      cb(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'R' : 'L') : (dy > 0 ? 'D' : 'U'));
+    });
+    addEventListener('keydown', e => {
+      const m = { ArrowLeft: 'L', ArrowRight: 'R', ArrowUp: 'U', ArrowDown: 'D', a: 'L', d: 'R', w: 'U', s: 'D' }[e.key];
+      if (m) { e.preventDefault(); cb(m) }
+    });
+  }
+
+  // Full-screen crisp canvas. Returns {c, x, W, H}; set .onresize to react.
+  function canvas() {
+    const c = document.createElement('canvas');
+    c.style.cssText = 'display:block;width:100vw;height:100vh';
+    document.body.prepend(c);
+    const o = { c, x: c.getContext('2d'), W: 0, H: 0 };
+    function r() {
+      const d = Math.min(devicePixelRatio || 1, 2);
+      o.W = innerWidth; o.H = innerHeight; c.width = o.W * d; c.height = o.H * d;
+      o.x.setTransform(d, 0, 0, d, 0, 0); o.onresize && o.onresize();
+    }
+    addEventListener('resize', r); r();
+    return o;
+  }
+
+  // Game loop with delta time (seconds, capped)
+  function loop(fn) {
+    let last = performance.now();
+    function f(t) { const dt = Math.min(.05, (t - last) / 1000); last = t; fn(dt); requestAnimationFrame(f) }
+    requestAnimationFrame(f);
+  }
+
+  return { beep, getBest, setBest, best, set, overlay, swipe, canvas, loop };
+})();
+
+</script>
+<style>
+#g{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);width:min(94vw,64vh,480px);aspect-ratio:1;display:grid;grid-template-columns:repeat(8,1fr);
+  gap:2px;padding:4px;background:#0a3a24;border-radius:10px;box-sizing:border-box;box-shadow:0 0 30px rgba(77,255,136,.25)}
+.q{background:#0f5a36;border-radius:4px;position:relative;cursor:pointer}
+.q i{position:absolute;inset:10%;border-radius:50%;transition:background .25s,transform .25s}
+.q.b i{background:#111;box-shadow:inset 0 -3px 0 #333}.q.w i{background:#f4f4f4;box-shadow:inset 0 -3px 0 #bbb}
+.q.ok::after{content:'';position:absolute;inset:38%;border-radius:50%;background:rgba(255,255,255,.3)}
+.q.last{outline:2px solid #ffe35a}
+#msg{position:fixed;left:0;right:0;bottom:70px;text-align:center;font-weight:700;color:#cfe8ff}
+</style></head><body>
+<div class="hud"><span>⚫ You <b id="p">2</b></span><span>Wins <b id="b">0</b></span><span>CPU ⚪ <b id="c">2</b></span></div>
+<div id="g"></div><div id="msg"></div>
+<script>
+const g = document.getElementById('g'), Q = [];
+const W = [100, -20, 10, 5, 5, 10, -20, 100, -20, -50, -2, -2, -2, -2, -50, -20, 10, -2, 1, 1, 1, 1, -2, 10, 5, -2, 1, 0, 0, 1, -2, 5, 5, -2, 1, 0, 0, 1, -2, 5, 10, -2, 1, 1, 1, 1, -2, 10, -20, -50, -2, -2, -2, -2, -50, -20, 100, -20, 10, 5, 5, 10, -20, 100];
+let B, busy, last = -1;
+G.set('b', G.getBest('reversi'));
+for (let i = 0; i < 64; i++) { const d = document.createElement('div'); d.className = 'q'; d.innerHTML = '<i></i>'; d.onclick = () => play(i); g.appendChild(d); Q.push(d) }
+function flips(b, i, p) {
+  if (b[i]) return []; const r = i >> 3, c = i & 7, out = [];
+  for (const [dr, dc] of [[-1, -1], [-1, 0], [-1, 1], [0, -1], [0, 1], [1, -1], [1, 0], [1, 1]]) {
+    const line = []; let rr = r + dr, cc = c + dc;
+    while (rr >= 0 && rr < 8 && cc >= 0 && cc < 8 && b[rr * 8 + cc] === 3 - p) { line.push(rr * 8 + cc); rr += dr; cc += dc }
+    if (line.length && rr >= 0 && rr < 8 && cc >= 0 && cc < 8 && b[rr * 8 + cc] === p) out.push(...line);
+  }
+  return out;
+}
+const moves = (b, p) => [...Array(64).keys()].filter(i => flips(b, i, p).length);
+function apply(b, i, p) { const f = flips(b, i, p); b[i] = p; f.forEach(j => b[j] = p); return f.length }
+function render() {
+  const ok = busy ? [] : moves(B, 1);
+  B.forEach((v, i) => Q[i].className = 'q' + (v === 1 ? ' b' : v === 2 ? ' w' : '') + (ok.includes(i) ? ' ok' : '') + (i === last ? ' last' : ''));
+  G.set('p', B.filter(v => v === 1).length); G.set('c', B.filter(v => v === 2).length);
+}
+function score(b) { let s = 0; b.forEach((v, i) => { if (v === 2) s += W[i]; else if (v === 1) s -= W[i] }); return s + (moves(b, 2).length - moves(b, 1).length) * 3 }
+function cpuPick() {
+  let best = -1e9, pick = -1;
+  for (const m of moves(B, 2)) {
+    const b = B.slice(); apply(b, m, 2);
+    const replies = moves(b, 1); let worst = 1e9;
+    if (!replies.length) worst = score(b) + 20;
+    for (const r of replies) { const b2 = b.slice(); apply(b2, r, 1); worst = Math.min(worst, score(b2)) }
+    if (worst + Math.random() > best) { best = worst; pick = m }
+  }
+  return pick;
+}
+function finish() {
+  const p = B.filter(v => v === 1).length, c = B.filter(v => v === 2).length; busy = true; render();
+  if (p > c) { const w = G.getBest('reversi') + 1; G.setBest('reversi', w); G.set('b', w); G.beep(880, .3, 'triangle') } else G.beep(200, .3, 'sawtooth');
+  setTimeout(() => G.overlay(p > c ? 'You win! 🎉' : c > p ? 'CPU wins' : 'Draw', 'You ' + p + ' – ' + c + ' CPU', 'Play again', newGame), 700);
+}
+function cpuTurn() {
+  if (!moves(B, 2).length) { if (!moves(B, 1).length) return finish(); busy = false; G.set('msg', 'CPU has no move — your turn again'); return render() }
+  const m = cpuPick(); apply(B, m, 2); last = m; G.beep(330, .06, 'triangle');
+  if (moves(B, 1).length) { busy = false; G.set('msg', 'Your turn (black)'); render() }
+  else if (moves(B, 2).length) { G.set('msg', 'You have no move — CPU goes again'); render(); setTimeout(cpuTurn, 700) }
+  else finish();
+}
+function play(i) {
+  if (busy || !flips(B, i, 1).length) return;
+  apply(B, i, 1); last = i; G.beep(520, .06, 'triangle'); busy = true; G.set('msg', 'CPU is thinking…'); render();
+  setTimeout(cpuTurn, 550);
+}
+function newGame() { B = Array(64).fill(0); B[27] = B[36] = 2; B[28] = B[35] = 1; busy = false; last = -1; G.set('msg', 'Your turn (black) — dots show legal moves'); render() }
+newGame();
+G.overlay('Reversi', 'Place a disc so you trap CPU discs in a straight line between yours.<br>Trapped discs flip to your color.<br>Most discs at the end wins. Dots show where you can play.', 'Start', () => {});
+</script></body></html>

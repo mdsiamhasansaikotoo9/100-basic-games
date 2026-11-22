@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Balloon Pump</title><script>
+// Shared helpers for every arcade game
+const G = (() => {
+  const st = document.createElement('style');
+  st.textContent = `
+html,body{margin:0;height:100%;background:#0b0820;color:#fff;font-family:system-ui,-apple-system,sans-serif;overflow:hidden;
+  touch-action:none;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
+.hud{position:fixed;top:12px;left:0;right:0;display:flex;justify-content:space-between;padding:0 18px;font-weight:700;
+  letter-spacing:1px;z-index:5;pointer-events:none;color:#cfe8ff}
+.hud b{color:#fff;font-size:20px;text-shadow:0 0 10px #3df5ff}
+.ov{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  background:rgba(8,5,25,.85);z-index:10;text-align:center;padding:20px}
+.ov h1{margin:0 0 10px;font-size:clamp(30px,8vw,52px);background:linear-gradient(90deg,#3df5ff,#ff3df0);
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.ov p{opacity:.88;line-height:1.6;max-width:340px;margin:6px 0}
+.ov button{margin-top:18px;font:inherit;font-weight:800;font-size:18px;padding:13px 34px;border:0;border-radius:999px;
+  background:linear-gradient(90deg,#3df5ff,#ff3df0);color:#0b0820;cursor:pointer}
+`;
+  document.head.appendChild(st);
+
+  let ac;
+  function beep(f, d = .08, type = 'sine', v = .1) {
+    try {
+      ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.type = type; o.frequency.value = f;
+      g.gain.setValueAtTime(v, ac.currentTime);
+      g.gain.exponentialRampToValueAtTime(.001, ac.currentTime + d);
+      o.connect(g).connect(ac.destination); o.start(); o.stop(ac.currentTime + d);
+    } catch (e) {}
+  }
+  function getBest(k) { try { return +localStorage.getItem('arc_' + k) || 0 } catch (e) { return 0 } }
+  function setBest(k, v) { try { localStorage.setItem('arc_' + k, v) } catch (e) {} }
+  // Save if higher (or lower when lowerIsBetter). Returns current best.
+  function best(k, v, lowerIsBetter) {
+    const b = getBest(k);
+    if (v != null && (!b || (lowerIsBetter ? v < b : v > b))) { setBest(k, v); return v }
+    return b;
+  }
+  function set(id, v) { const e = document.getElementById(id); if (e) e.textContent = v }
+
+  function overlay(title, html, btn, cb) {
+    let o = document.querySelector('.ov');
+    if (!o) { o = document.createElement('div'); o.className = 'ov'; document.body.appendChild(o) }
+    o.innerHTML = `<h1>${title}</h1><p>${html}</p><button>${btn}</button>`;
+    o.style.display = 'flex';
+    o.addEventListener('pointerdown', e => e.stopPropagation());
+    o.querySelector('button').onclick = e => { e.stopPropagation(); o.style.display = 'none'; beep(440, .08, 'triangle'); cb() };
+  }
+
+  // Swipe (touch/mouse) + arrow keys / WASD → 'L','R','U','D'
+  function swipe(cb) {
+    let sx = null, sy = null;
+    addEventListener('pointerdown', e => { sx = e.clientX; sy = e.clientY });
+    addEventListener('pointerup', e => {
+      if (sx == null) return;
+      const dx = e.clientX - sx, dy = e.clientY - sy; sx = null;
+      if (Math.max(Math.abs(dx), Math.abs(dy)) < 20) return;
+      cb(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'R' : 'L') : (dy > 0 ? 'D' : 'U'));
+    });
+    addEventListener('keydown', e => {
+      const m = { ArrowLeft: 'L', ArrowRight: 'R', ArrowUp: 'U', ArrowDown: 'D', a: 'L', d: 'R', w: 'U', s: 'D' }[e.key];
+      if (m) { e.preventDefault(); cb(m) }
+    });
+  }
+
+  // Full-screen crisp canvas. Returns {c, x, W, H}; set .onresize to react.
+  function canvas() {
+    const c = document.createElement('canvas');
+    c.style.cssText = 'display:block;width:100vw;height:100vh';
+    document.body.prepend(c);
+    const o = { c, x: c.getContext('2d'), W: 0, H: 0 };
+    function r() {
+      const d = Math.min(devicePixelRatio || 1, 2);
+      o.W = innerWidth; o.H = innerHeight; c.width = o.W * d; c.height = o.H * d;
+      o.x.setTransform(d, 0, 0, d, 0, 0); o.onresize && o.onresize();
+    }
+    addEventListener('resize', r); r();
+    return o;
+  }
+
+  // Game loop with delta time (seconds, capped)
+  function loop(fn) {
+    let last = performance.now();
+    function f(t) { const dt = Math.min(.05, (t - last) / 1000); last = t; fn(dt); requestAnimationFrame(f) }
+    requestAnimationFrame(f);
+  }
+
+  return { beep, getBest, setBest, best, set, overlay, swipe, canvas, loop };
+})();
+
+</script>
+<style>
+#bank{position:fixed;left:50%;bottom:64px;transform:translateX(-50%);font:inherit;font-weight:900;font-size:20px;padding:14px 34px;border:0;border-radius:999px;background:#4dff88;color:#0b0820;z-index:6}
+#info{position:fixed;left:0;right:0;top:56px;text-align:center;color:#cfe8ff;font-weight:700}
+</style></head><body>
+<div class="hud"><span>Total <b id="s">0</b></span><span>Balloon <b id="n">1</b>/10</span><span>Best <b id="b">0</b></span></div>
+<div id="info">Hold to pump · Tap 💰 to cash in</div>
+<button id="bank">💰 Cash in</button>
+<script>
+const K = G.canvas(), x = K.x;
+let size = 0, popAt = 0, total = 0, n = 1, hold = false, run = false, state = 'pump', parts = [], hue = 0, t = 0, lastBeep = 0;
+G.set('b', G.best('balloon'));
+const val = () => Math.floor(size * 100);
+function newBalloon() { size = .05; popAt = .25 + Math.random() * Math.random() * .75 + Math.random() * .1; hue = Math.random() * 360; state = 'pump'; G.set('n', n) }
+function start() { total = 0; n = 1; run = true; G.set('s', 0); newBalloon() }
+function next() { n++; if (n > 10) { run = false; G.set('b', G.best('balloon', total)); G.overlay('All done! 🎈', 'Total: ' + total + ' points', 'Play again', start) } else newBalloon() }
+const bank = document.getElementById('bank');
+bank.addEventListener('pointerdown', e => { e.stopPropagation(); if (!run || state !== 'pump' || size < .06) return; total += val(); G.set('s', total); state = 'banked'; G.beep(1000, .15, 'triangle'); setTimeout(next, 700) });
+addEventListener('pointerdown', () => hold = true); addEventListener('pointerup', () => hold = false); addEventListener('pointercancel', () => hold = false);
+addEventListener('keydown', e => { if (e.code == 'Space') { e.preventDefault(); hold = true } if (e.key == 'Enter') bank.dispatchEvent(new Event('pointerdown')) });
+addEventListener('keyup', e => { if (e.code == 'Space') hold = false });
+G.loop(dt => {
+  t += dt;
+  for (const p of parts) { p.x += p.vx * dt; p.y += p.vy * dt; p.vy += 500 * dt; p.life -= dt } parts = parts.filter(p => p.life > 0);
+  if (run && state === 'pump' && hold) {
+    size += dt * .22; if (t - lastBeep > .12) { lastBeep = t; G.beep(200 + size * 600, .05, 'sine', .05) }
+    if (size >= popAt) {
+      state = 'popped'; G.beep(90, .4, 'sawtooth', .2); const cx = K.W / 2, cy = K.H * .45;
+      for (let i = 0; i < 40; i++) { const a = Math.random() * 7, v = 100 + Math.random() * 300; parts.push({ x: cx, y: cy, vx: Math.cos(a) * v, vy: Math.sin(a) * v, life: 1, c: `hsl(${hue},90%,60%)` }) }
+      setTimeout(next, 900);
+    }
+  }
+  x.fillStyle = '#0b0820'; x.fillRect(0, 0, K.W, K.H);
+  const cx = K.W / 2, cy = K.H * .45, r = 30 + size * Math.min(K.W, K.H) * .38;
+  if (run && state !== 'popped') {
+    const wob = Math.sin(t * 3) * 3, y = state === 'banked' ? cy - (t % 10) * 0 : cy;
+    x.strokeStyle = '#ddd'; x.lineWidth = 1.5; x.beginPath(); x.moveTo(cx, y + r); x.quadraticCurveTo(cx + 10, y + r + 40, cx, K.H - 140); x.stroke();
+    const gr = x.createRadialGradient(cx - r * .3, y - r * .4 + wob, r * .1, cx, y + wob, r);
+    gr.addColorStop(0, `hsl(${hue},100%,85%)`); gr.addColorStop(1, `hsl(${hue},90%,${55 - size * 20}%)`);
+    x.fillStyle = gr; x.beginPath(); x.ellipse(cx, y + wob, r * .9, r, 0, 0, 7); x.fill();
+    x.fillStyle = `hsl(${hue},90%,45%)`; x.beginPath(); x.moveTo(cx - 6, y + r + wob); x.lineTo(cx + 6, y + r + wob); x.lineTo(cx, y + r - 8 + wob); x.fill();
+    x.fillStyle = '#fff'; x.font = `900 ${18 + size * 30}px system-ui`; x.textAlign = 'center'; x.textBaseline = 'middle'; x.fillText(state === 'banked' ? '+' + val() : val(), cx, y + wob);
+  }
+  for (const p of parts) { x.globalAlpha = p.life; x.fillStyle = p.c; x.fillRect(p.x - 4, p.y - 3, 8, 6) } x.globalAlpha = 1;
+  if (state === 'popped') { x.fillStyle = '#ff4d6d'; x.font = '900 36px system-ui'; x.textAlign = 'center'; x.fillText('POP! 0', cx, cy) }
+  // pump
+  x.fillStyle = '#3a2a90'; x.fillRect(cx - 25, K.H - 140, 50, 30); x.fillStyle = '#5a4ad0'; x.fillRect(cx - 4, K.H - 170 + (hold && state === 'pump' ? Math.abs(Math.sin(t * 20)) * 20 : 0), 8, 30);
+});
+G.overlay('Balloon Pump', 'Hold anywhere to pump up the balloon. Bigger = more points.<br>Tap 💰 Cash in to keep the points.<br>But if it pops, you get nothing! 10 balloons.', 'Start', start);
+</script></body></html>

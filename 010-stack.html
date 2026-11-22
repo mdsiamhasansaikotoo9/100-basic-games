@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Stack</title><script>
+// Shared helpers for every arcade game
+const G = (() => {
+  const st = document.createElement('style');
+  st.textContent = `
+html,body{margin:0;height:100%;background:#0b0820;color:#fff;font-family:system-ui,-apple-system,sans-serif;overflow:hidden;
+  touch-action:none;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
+.hud{position:fixed;top:12px;left:0;right:0;display:flex;justify-content:space-between;padding:0 18px;font-weight:700;
+  letter-spacing:1px;z-index:5;pointer-events:none;color:#cfe8ff}
+.hud b{color:#fff;font-size:20px;text-shadow:0 0 10px #3df5ff}
+.ov{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  background:rgba(8,5,25,.85);z-index:10;text-align:center;padding:20px}
+.ov h1{margin:0 0 10px;font-size:clamp(30px,8vw,52px);background:linear-gradient(90deg,#3df5ff,#ff3df0);
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.ov p{opacity:.88;line-height:1.6;max-width:340px;margin:6px 0}
+.ov button{margin-top:18px;font:inherit;font-weight:800;font-size:18px;padding:13px 34px;border:0;border-radius:999px;
+  background:linear-gradient(90deg,#3df5ff,#ff3df0);color:#0b0820;cursor:pointer}
+`;
+  document.head.appendChild(st);
+
+  let ac;
+  function beep(f, d = .08, type = 'sine', v = .1) {
+    try {
+      ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.type = type; o.frequency.value = f;
+      g.gain.setValueAtTime(v, ac.currentTime);
+      g.gain.exponentialRampToValueAtTime(.001, ac.currentTime + d);
+      o.connect(g).connect(ac.destination); o.start(); o.stop(ac.currentTime + d);
+    } catch (e) {}
+  }
+  function getBest(k) { try { return +localStorage.getItem('arc_' + k) || 0 } catch (e) { return 0 } }
+  function setBest(k, v) { try { localStorage.setItem('arc_' + k, v) } catch (e) {} }
+  // Save if higher (or lower when lowerIsBetter). Returns current best.
+  function best(k, v, lowerIsBetter) {
+    const b = getBest(k);
+    if (v != null && (!b || (lowerIsBetter ? v < b : v > b))) { setBest(k, v); return v }
+    return b;
+  }
+  function set(id, v) { const e = document.getElementById(id); if (e) e.textContent = v }
+
+  function overlay(title, html, btn, cb) {
+    let o = document.querySelector('.ov');
+    if (!o) { o = document.createElement('div'); o.className = 'ov'; document.body.appendChild(o) }
+    o.innerHTML = `<h1>${title}</h1><p>${html}</p><button>${btn}</button>`;
+    o.style.display = 'flex';
+    o.addEventListener('pointerdown', e => e.stopPropagation());
+    o.querySelector('button').onclick = e => { e.stopPropagation(); o.style.display = 'none'; beep(440, .08, 'triangle'); cb() };
+  }
+
+  // Swipe (touch/mouse) + arrow keys / WASD → 'L','R','U','D'
+  function swipe(cb) {
+    let sx = null, sy = null;
+    addEventListener('pointerdown', e => { sx = e.clientX; sy = e.clientY });
+    addEventListener('pointerup', e => {
+      if (sx == null) return;
+      const dx = e.clientX - sx, dy = e.clientY - sy; sx = null;
+      if (Math.max(Math.abs(dx), Math.abs(dy)) < 20) return;
+      cb(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'R' : 'L') : (dy > 0 ? 'D' : 'U'));
+    });
+    addEventListener('keydown', e => {
+      const m = { ArrowLeft: 'L', ArrowRight: 'R', ArrowUp: 'U', ArrowDown: 'D', a: 'L', d: 'R', w: 'U', s: 'D' }[e.key];
+      if (m) { e.preventDefault(); cb(m) }
+    });
+  }
+
+  // Full-screen crisp canvas. Returns {c, x, W, H}; set .onresize to react.
+  function canvas() {
+    const c = document.createElement('canvas');
+    c.style.cssText = 'display:block;width:100vw;height:100vh';
+    document.body.prepend(c);
+    const o = { c, x: c.getContext('2d'), W: 0, H: 0 };
+    function r() {
+      const d = Math.min(devicePixelRatio || 1, 2);
+      o.W = innerWidth; o.H = innerHeight; c.width = o.W * d; c.height = o.H * d;
+      o.x.setTransform(d, 0, 0, d, 0, 0); o.onresize && o.onresize();
+    }
+    addEventListener('resize', r); r();
+    return o;
+  }
+
+  // Game loop with delta time (seconds, capped)
+  function loop(fn) {
+    let last = performance.now();
+    function f(t) { const dt = Math.min(.05, (t - last) / 1000); last = t; fn(dt); requestAnimationFrame(f) }
+    requestAnimationFrame(f);
+  }
+
+  return { beep, getBest, setBest, best, set, overlay, swipe, canvas, loop };
+})();
+
+</script></head><body>
+<div class="hud"><span>Height <b id="s">0</b></span><span>Best <b id="b">0</b></span></div>
+<script>
+const K = G.canvas(), x = K.x, BH = 26;
+let blocks = [], cur = null, falls = [], run = false, cam = 0, combo = 0, flash = 0;
+G.set('b', G.best('stack'));
+const col = i => `hsl(${(i * 9 + 190) % 360},90%,60%)`;
+function start() {
+  const w = Math.min(K.W * .6, 280);
+  blocks = [{ x: (K.W - w) / 2, w }]; falls = []; cam = 0; combo = 0; G.set('s', 0); newCur(); run = true;
+}
+function newCur() {
+  const prev = blocks[blocks.length - 1], left = blocks.length % 2;
+  cur = { x: left ? -prev.w : K.W, w: prev.w, dir: left ? 1 : -1, sp: 160 + blocks.length * 7 };
+}
+function drop() {
+  if (!run) return;
+  const prev = blocks[blocks.length - 1], L = Math.max(cur.x, prev.x), R = Math.min(cur.x + cur.w, prev.x + prev.w);
+  if (R <= L) { falls.push({ x: cur.x, w: cur.w, y: blocks.length, vy: 0, i: blocks.length }); return over() }
+  if (Math.abs(cur.x - prev.x) < 5) { // perfect!
+    combo++; flash = 1; G.beep(600 + combo * 80, .12, 'triangle');
+    blocks.push({ x: prev.x, w: prev.w + (combo >= 3 ? 6 : 0) });
+  } else {
+    combo = 0; G.beep(300, .07, 'square', .05);
+    const cutX = cur.x < prev.x ? cur.x : R, cutW = cur.w - (R - L);
+    falls.push({ x: cutX, w: cutW, y: blocks.length, vy: 0, i: blocks.length });
+    blocks.push({ x: L, w: R - L });
+  }
+  G.set('s', blocks.length - 1); newCur();
+}
+function over() { run = false; G.beep(120, .4, 'sawtooth'); const s = blocks.length - 1; G.set('b', G.best('stack', s)); setTimeout(() => G.overlay('Tower fell!', 'Height: ' + s, 'Play again', start), 500) }
+addEventListener('pointerdown', drop);
+addEventListener('keydown', e => { if (e.code == 'Space') { e.preventDefault(); drop() } });
+G.loop(dt => {
+  if (run) {
+    cur.x += cur.dir * cur.sp * dt;
+    if (cur.x > K.W - cur.w * .3 && cur.dir > 0) cur.dir = -1;
+    if (cur.x < -cur.w * .7 && cur.dir < 0) cur.dir = 1;
+  }
+  for (const f of falls) { f.vy += 1400 * dt; f.y -= f.vy * dt / BH }
+  falls = falls.filter(f => f.y > -40);
+  flash *= .9;
+  const target = Math.max(0, (blocks.length - 7) * BH); cam += (target - cam) * Math.min(1, dt * 6);
+  // draw
+  const bg = x.createLinearGradient(0, 0, 0, K.H); bg.addColorStop(0, `hsl(${(blocks.length * 6 + 250) % 360},50%,10%)`); bg.addColorStop(1, '#0b0820');
+  x.fillStyle = bg; x.fillRect(0, 0, K.W, K.H);
+  const base = K.H - 110, Y = i => base - i * BH + cam;
+  blocks.forEach((b, i) => { x.fillStyle = col(i); x.fillRect(b.x, Y(i), b.w, BH - 2) });
+  if (cur && run) { x.shadowColor = col(blocks.length); x.shadowBlur = 16; x.fillStyle = col(blocks.length); x.fillRect(cur.x, Y(blocks.length), cur.w, BH - 2); x.shadowBlur = 0 }
+  for (const f of falls) { x.globalAlpha = .7; x.fillStyle = col(f.i); x.fillRect(f.x, Y(f.y), f.w, BH - 2) }
+  x.globalAlpha = 1;
+  if (flash > .05) { x.fillStyle = `rgba(255,255,255,${flash * .4})`; x.fillRect(0, 0, K.W, K.H) }
+  if (run && combo >= 2) { x.fillStyle = '#ffe35a'; x.font = '800 22px system-ui'; x.textAlign = 'center'; x.fillText('PERFECT x' + combo, K.W / 2, 90) }
+});
+G.overlay('Stack', 'Tap (or Space) to drop the sliding block.<br>Anything hanging off gets cut.<br>Line up perfectly 3 times to grow it back.', 'Start', start);
+</script></body></html>

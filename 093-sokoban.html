@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Sokoban</title><script>
+// Shared helpers for every arcade game
+const G = (() => {
+  const st = document.createElement('style');
+  st.textContent = `
+html,body{margin:0;height:100%;background:#0b0820;color:#fff;font-family:system-ui,-apple-system,sans-serif;overflow:hidden;
+  touch-action:none;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
+.hud{position:fixed;top:12px;left:0;right:0;display:flex;justify-content:space-between;padding:0 18px;font-weight:700;
+  letter-spacing:1px;z-index:5;pointer-events:none;color:#cfe8ff}
+.hud b{color:#fff;font-size:20px;text-shadow:0 0 10px #3df5ff}
+.ov{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  background:rgba(8,5,25,.85);z-index:10;text-align:center;padding:20px}
+.ov h1{margin:0 0 10px;font-size:clamp(30px,8vw,52px);background:linear-gradient(90deg,#3df5ff,#ff3df0);
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.ov p{opacity:.88;line-height:1.6;max-width:340px;margin:6px 0}
+.ov button{margin-top:18px;font:inherit;font-weight:800;font-size:18px;padding:13px 34px;border:0;border-radius:999px;
+  background:linear-gradient(90deg,#3df5ff,#ff3df0);color:#0b0820;cursor:pointer}
+`;
+  document.head.appendChild(st);
+
+  let ac;
+  function beep(f, d = .08, type = 'sine', v = .1) {
+    try {
+      ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.type = type; o.frequency.value = f;
+      g.gain.setValueAtTime(v, ac.currentTime);
+      g.gain.exponentialRampToValueAtTime(.001, ac.currentTime + d);
+      o.connect(g).connect(ac.destination); o.start(); o.stop(ac.currentTime + d);
+    } catch (e) {}
+  }
+  function getBest(k) { try { return +localStorage.getItem('arc_' + k) || 0 } catch (e) { return 0 } }
+  function setBest(k, v) { try { localStorage.setItem('arc_' + k, v) } catch (e) {} }
+  // Save if higher (or lower when lowerIsBetter). Returns current best.
+  function best(k, v, lowerIsBetter) {
+    const b = getBest(k);
+    if (v != null && (!b || (lowerIsBetter ? v < b : v > b))) { setBest(k, v); return v }
+    return b;
+  }
+  function set(id, v) { const e = document.getElementById(id); if (e) e.textContent = v }
+
+  function overlay(title, html, btn, cb) {
+    let o = document.querySelector('.ov');
+    if (!o) { o = document.createElement('div'); o.className = 'ov'; document.body.appendChild(o) }
+    o.innerHTML = `<h1>${title}</h1><p>${html}</p><button>${btn}</button>`;
+    o.style.display = 'flex';
+    o.addEventListener('pointerdown', e => e.stopPropagation());
+    o.querySelector('button').onclick = e => { e.stopPropagation(); o.style.display = 'none'; beep(440, .08, 'triangle'); cb() };
+  }
+
+  // Swipe (touch/mouse) + arrow keys / WASD → 'L','R','U','D'
+  function swipe(cb) {
+    let sx = null, sy = null;
+    addEventListener('pointerdown', e => { sx = e.clientX; sy = e.clientY });
+    addEventListener('pointerup', e => {
+      if (sx == null) return;
+      const dx = e.clientX - sx, dy = e.clientY - sy; sx = null;
+      if (Math.max(Math.abs(dx), Math.abs(dy)) < 20) return;
+      cb(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'R' : 'L') : (dy > 0 ? 'D' : 'U'));
+    });
+    addEventListener('keydown', e => {
+      const m = { ArrowLeft: 'L', ArrowRight: 'R', ArrowUp: 'U', ArrowDown: 'D', a: 'L', d: 'R', w: 'U', s: 'D' }[e.key];
+      if (m) { e.preventDefault(); cb(m) }
+    });
+  }
+
+  // Full-screen crisp canvas. Returns {c, x, W, H}; set .onresize to react.
+  function canvas() {
+    const c = document.createElement('canvas');
+    c.style.cssText = 'display:block;width:100vw;height:100vh';
+    document.body.prepend(c);
+    const o = { c, x: c.getContext('2d'), W: 0, H: 0 };
+    function r() {
+      const d = Math.min(devicePixelRatio || 1, 2);
+      o.W = innerWidth; o.H = innerHeight; c.width = o.W * d; c.height = o.H * d;
+      o.x.setTransform(d, 0, 0, d, 0, 0); o.onresize && o.onresize();
+    }
+    addEventListener('resize', r); r();
+    return o;
+  }
+
+  // Game loop with delta time (seconds, capped)
+  function loop(fn) {
+    let last = performance.now();
+    function f(t) { const dt = Math.min(.05, (t - last) / 1000); last = t; fn(dt); requestAnimationFrame(f) }
+    requestAnimationFrame(f);
+  }
+
+  return { beep, getBest, setBest, best, set, overlay, swipe, canvas, loop };
+})();
+
+</script>
+<style>#ctl{position:fixed;right:12px;bottom:12px;z-index:20;display:flex;gap:8px}#ctl button{font:inherit;font-weight:700;font-size:14px;color:#0b0820;background:#3df5ff;border:0;border-radius:999px;padding:8px 14px}</style></head><body>
+<div class="hud"><span>Level <b id="s">1</b>/8</span><span>Steps <b id="m">0</b> (best <b id="par">0</b>)</span><span>Top <b id="b">0</b></span></div>
+<div id="ctl"><button id="undo">↶ Undo</button><button id="rs">↺</button></div>
+<script>
+// Every level was checked with a computer solver; PAR = fewest possible steps.
+const LV = ["#####\n#@  #\n# $ #\n#  .#\n#####", "######\n#    #\n# $$ #\n#.@ .#\n######", " #####\n##   #\n#@$  #\n## $ #\n #. .#\n #####",
+  "  ####\n###  #\n#.$ @#\n#.$  #\n#.$ ##\n#   #\n#####", "#######\n#  .  #\n# #$# #\n#. $ .#\n# #$# #\n#  @  #\n#######", "########\n#   #  #\n# $  $ #\n##.##. #\n #  @$ #\n # .   #\n #######",
+  "#######\n#.  ..#\n# $ $ #\n#@ $  #\n# $   #\n#   . #\n#######", "########\n#  .   #\n# $##$ #\n#  @   #\n# $##$ #\n#  .  .#\n#   .  #\n########"];
+const PAR = [5, 12, 10, 8, 39, 24, 19, 35];
+const K = G.canvas(), x = K.x;
+let level = 0, walls, goals, boxes, me, steps = 0, hist = [], run = false, W, H, cell, ox, oy;
+G.set('b', G.best('sokoban'));
+function load() {
+  const g = LV[level].split('\n'); H = g.length; W = Math.max(...g.map(r => r.length)); walls = new Set(); goals = new Set(); boxes = new Set();
+  g.forEach((row, r) => [...row].forEach((ch, c) => { const k = r * 100 + c; if (ch === '#') walls.add(k); if ('.*+'.includes(ch)) goals.add(k); if ('$*'.includes(ch)) boxes.add(k); if ('@+'.includes(ch)) me = k }));
+  steps = 0; hist = []; run = true; G.set('s', level + 1); G.set('m', 0); G.set('par', PAR[level]); layout();
+}
+function layout() { if (!W) return; cell = Math.floor(Math.min((K.W - 20) / W, (K.H - 150) / H)); ox = (K.W - cell * W) / 2; oy = (K.H - cell * H) / 2 + 10 }
+K.onresize = layout;
+const D = { U: -100, D: 100, L: -1, R: 1 };
+function move(d) {
+  if (!run) return; const n = me + D[d];
+  if (walls.has(n)) return;
+  if (boxes.has(n)) { const t = n + D[d]; if (walls.has(t) || boxes.has(t)) return; hist.push([me, new Set(boxes)]); boxes.delete(n); boxes.add(t); G.beep(goals.has(t) ? 800 : 260, .06, 'triangle', .06) }
+  else { hist.push([me, new Set(boxes)]); G.beep(400, .02, 'square', .02) }
+  me = n; steps++; G.set('m', steps);
+  if ([...boxes].every(b => goals.has(b))) {
+    run = false; G.set('b', G.best('sokoban', level + 1)); G.beep(1000, .3, 'triangle');
+    const last = level === LV.length - 1, msg = (steps <= PAR[level] ? 'Perfect! ' : '') + 'Solved in ' + steps + ' steps (best possible ' + PAR[level] + ').';
+    setTimeout(() => G.overlay(last ? 'All 8 levels done! 🏆' : 'Level ' + (level + 1) + ' done!', msg, last ? 'Play again from level 1' : 'Next level', () => { level = last ? 0 : level + 1; load() }), 400);
+  }
+}
+G.swipe(move);
+document.getElementById('undo').onclick = () => { if (run && hist.length) { const [p, b] = hist.pop(); me = p; boxes = b; steps++; G.set('m', steps) } };
+document.getElementById('rs').onclick = () => { if (run) load() };
+G.loop(() => {
+  x.fillStyle = '#0b0820'; x.fillRect(0, 0, K.W, K.H); if (!walls) return;
+  for (let r = 0; r < H; r++) for (let c = 0; c < W; c++) {
+    const k = r * 100 + c, px = ox + c * cell, py = oy + r * cell;
+    if (walls.has(k)) { x.fillStyle = '#3a2a90'; x.fillRect(px, py, cell, cell); x.fillStyle = '#4a3aa8'; x.fillRect(px + 2, py + 2, cell - 4, cell * .4) }
+    else { x.fillStyle = '#16102e'; x.fillRect(px, py, cell, cell) }
+    if (goals.has(k)) { x.strokeStyle = '#4dff88'; x.lineWidth = 3; x.beginPath(); x.arc(px + cell / 2, py + cell / 2, cell * .25, 0, 7); x.stroke() }
+  }
+  for (const b of boxes) { const px = ox + (b % 100) * cell, py = oy + (b / 100 | 0) * cell, on = goals.has(b); x.fillStyle = on ? '#4dff88' : '#ffb13d'; x.shadowColor = x.fillStyle; x.shadowBlur = on ? 14 : 0; x.fillRect(px + 4, py + 4, cell - 8, cell - 8); x.shadowBlur = 0; x.strokeStyle = 'rgba(0,0,0,.3)'; x.lineWidth = 2; x.strokeRect(px + 8, py + 8, cell - 16, cell - 16) }
+  x.font = `${cell * .75}px system-ui`; x.textAlign = 'center'; x.textBaseline = 'middle'; x.fillStyle = '#fff'; x.fillText('🧑', ox + (me % 100 + .5) * cell, oy + ((me / 100 | 0) + .55) * cell);
+});
+load();
+G.overlay('Sokoban', 'Swipe (or arrow keys) to walk.<br>Push every orange box onto a green circle.<br>You can only push, never pull — so think ahead! Use Undo if you get stuck.', 'Start', () => {});
+</script></body></html>

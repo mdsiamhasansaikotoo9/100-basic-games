@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Ballz</title><script>
+// Shared helpers for every arcade game
+const G = (() => {
+  const st = document.createElement('style');
+  st.textContent = `
+html,body{margin:0;height:100%;background:#0b0820;color:#fff;font-family:system-ui,-apple-system,sans-serif;overflow:hidden;
+  touch-action:none;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
+.hud{position:fixed;top:12px;left:0;right:0;display:flex;justify-content:space-between;padding:0 18px;font-weight:700;
+  letter-spacing:1px;z-index:5;pointer-events:none;color:#cfe8ff}
+.hud b{color:#fff;font-size:20px;text-shadow:0 0 10px #3df5ff}
+.ov{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  background:rgba(8,5,25,.85);z-index:10;text-align:center;padding:20px}
+.ov h1{margin:0 0 10px;font-size:clamp(30px,8vw,52px);background:linear-gradient(90deg,#3df5ff,#ff3df0);
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.ov p{opacity:.88;line-height:1.6;max-width:340px;margin:6px 0}
+.ov button{margin-top:18px;font:inherit;font-weight:800;font-size:18px;padding:13px 34px;border:0;border-radius:999px;
+  background:linear-gradient(90deg,#3df5ff,#ff3df0);color:#0b0820;cursor:pointer}
+`;
+  document.head.appendChild(st);
+
+  let ac;
+  function beep(f, d = .08, type = 'sine', v = .1) {
+    try {
+      ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.type = type; o.frequency.value = f;
+      g.gain.setValueAtTime(v, ac.currentTime);
+      g.gain.exponentialRampToValueAtTime(.001, ac.currentTime + d);
+      o.connect(g).connect(ac.destination); o.start(); o.stop(ac.currentTime + d);
+    } catch (e) {}
+  }
+  function getBest(k) { try { return +localStorage.getItem('arc_' + k) || 0 } catch (e) { return 0 } }
+  function setBest(k, v) { try { localStorage.setItem('arc_' + k, v) } catch (e) {} }
+  // Save if higher (or lower when lowerIsBetter). Returns current best.
+  function best(k, v, lowerIsBetter) {
+    const b = getBest(k);
+    if (v != null && (!b || (lowerIsBetter ? v < b : v > b))) { setBest(k, v); return v }
+    return b;
+  }
+  function set(id, v) { const e = document.getElementById(id); if (e) e.textContent = v }
+
+  function overlay(title, html, btn, cb) {
+    let o = document.querySelector('.ov');
+    if (!o) { o = document.createElement('div'); o.className = 'ov'; document.body.appendChild(o) }
+    o.innerHTML = `<h1>${title}</h1><p>${html}</p><button>${btn}</button>`;
+    o.style.display = 'flex';
+    o.addEventListener('pointerdown', e => e.stopPropagation());
+    o.querySelector('button').onclick = e => { e.stopPropagation(); o.style.display = 'none'; beep(440, .08, 'triangle'); cb() };
+  }
+
+  // Swipe (touch/mouse) + arrow keys / WASD → 'L','R','U','D'
+  function swipe(cb) {
+    let sx = null, sy = null;
+    addEventListener('pointerdown', e => { sx = e.clientX; sy = e.clientY });
+    addEventListener('pointerup', e => {
+      if (sx == null) return;
+      const dx = e.clientX - sx, dy = e.clientY - sy; sx = null;
+      if (Math.max(Math.abs(dx), Math.abs(dy)) < 20) return;
+      cb(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'R' : 'L') : (dy > 0 ? 'D' : 'U'));
+    });
+    addEventListener('keydown', e => {
+      const m = { ArrowLeft: 'L', ArrowRight: 'R', ArrowUp: 'U', ArrowDown: 'D', a: 'L', d: 'R', w: 'U', s: 'D' }[e.key];
+      if (m) { e.preventDefault(); cb(m) }
+    });
+  }
+
+  // Full-screen crisp canvas. Returns {c, x, W, H}; set .onresize to react.
+  function canvas() {
+    const c = document.createElement('canvas');
+    c.style.cssText = 'display:block;width:100vw;height:100vh';
+    document.body.prepend(c);
+    const o = { c, x: c.getContext('2d'), W: 0, H: 0 };
+    function r() {
+      const d = Math.min(devicePixelRatio || 1, 2);
+      o.W = innerWidth; o.H = innerHeight; c.width = o.W * d; c.height = o.H * d;
+      o.x.setTransform(d, 0, 0, d, 0, 0); o.onresize && o.onresize();
+    }
+    addEventListener('resize', r); r();
+    return o;
+  }
+
+  // Game loop with delta time (seconds, capped)
+  function loop(fn) {
+    let last = performance.now();
+    function f(t) { const dt = Math.min(.05, (t - last) / 1000); last = t; fn(dt); requestAnimationFrame(f) }
+    requestAnimationFrame(f);
+  }
+
+  return { beep, getBest, setBest, best, set, overlay, swipe, canvas, loop };
+})();
+
+</script></head><body>
+<div class="hud"><span>Round <b id="s">1</b></span><span>Balls <b id="n">1</b></span><span>Best <b id="b">0</b></span></div>
+<script>
+const K = G.canvas(), x = K.x, COLS = 7, ROWS = 9, BR = 7;
+let blocks = [], pickups = [], balls = [], nBalls = 1, round = 1, launchX, nextX = null, aim = null, firing = false, toFire = 0, fireT = 0, run = false, cell, ox, oy;
+G.set('b', G.best('ballz'));
+K.onresize = () => { cell = Math.min((K.W - 16) / COLS, (K.H - 170) / (ROWS + 1)); ox = (K.W - cell * COLS) / 2; oy = 70; if (launchX == null || !run) launchX = K.W / 2 }; K.onresize();
+const floorY = () => oy + cell * (ROWS + 1);
+function addRow() {
+  blocks.forEach(b => b.r++); pickups.forEach(p => p.r++);
+  const cols = [...Array(COLS).keys()].sort(() => Math.random() - .5), n = 2 + (Math.random() * 3 | 0);
+  cols.slice(0, n).forEach(c => blocks.push({ r: 1, c, hp: Math.random() < .25 ? round * 2 : round }));
+  pickups.push({ r: 1, c: cols[n] });
+}
+function start() { blocks = []; pickups = []; balls = []; nBalls = 1; round = 1; launchX = K.W / 2; nextX = null; firing = false; run = true; G.set('s', 1); G.set('n', 1); addRow() }
+function endRound() {
+  firing = false; round++; G.set('s', round); launchX = nextX ?? launchX; nextX = null; addRow();
+  if (blocks.some(b => b.r >= ROWS)) { run = false; G.beep(110, .5, 'sawtooth'); G.set('b', G.best('ballz', round - 1)); G.overlay('Game Over', 'You survived ' + (round - 1) + ' rounds with ' + nBalls + ' balls.', 'Play again', start) }
+}
+const setAim = e => aim = { x: e.clientX, y: e.clientY };
+addEventListener('pointerdown', e => { if (run && !firing) setAim(e) }); addEventListener('pointermove', e => { if (aim) setAim(e) });
+addEventListener('pointerup', () => {
+  if (!aim || firing || !run) { aim = null; return } const a = Math.atan2(aim.y - floorY(), aim.x - launchX); aim = null;
+  if (Math.sin(a) > -.08) return; firing = { a }; toFire = nBalls; fireT = 0; G.beep(500, .05, 'triangle');
+});
+G.loop(dt => {
+  if (run && firing) {
+    fireT -= dt; if (toFire > 0 && fireT <= 0) { fireT = .07; toFire--; balls.push({ x: launchX, y: floorY() - BR, vx: Math.cos(firing.a) * 820, vy: Math.sin(firing.a) * 820 }) }
+    for (let s = 0; s < 6; s++) {
+      const h = dt / 6;
+      for (const b of balls) {
+        if (b.done) continue; b.x += b.vx * h; b.y += b.vy * h;
+        if (b.x < ox + BR) { b.x = ox + BR; b.vx = Math.abs(b.vx) } if (b.x > ox + cell * COLS - BR) { b.x = ox + cell * COLS - BR; b.vx = -Math.abs(b.vx) }
+        if (b.y < oy + BR) { b.y = oy + BR; b.vy = Math.abs(b.vy) }
+        if (b.y >= floorY() - BR && b.vy > 0) { b.done = 1; b.y = floorY() - BR; if (nextX == null) nextX = Math.max(ox + BR, Math.min(ox + cell * COLS - BR, b.x)) }
+        for (const k of blocks) {
+          const bx = ox + k.c * cell + 2, by = oy + k.r * cell + 2, w = cell - 4; const cx = Math.max(bx, Math.min(b.x, bx + w)), cy = Math.max(by, Math.min(b.y, by + w)), dx = b.x - cx, dy = b.y - cy;
+          if (dx * dx + dy * dy < BR * BR) {
+            if (Math.abs(dx) > Math.abs(dy)) { b.vx = Math.sign(dx || -b.vx) * Math.abs(b.vx); b.x = cx + Math.sign(dx || -b.vx) * BR } else { b.vy = Math.sign(dy || -b.vy) * Math.abs(b.vy); b.y = cy + Math.sign(dy || -b.vy) * BR }
+            k.hp--; if (k.hp <= 0) { k.dead = 1; G.beep(800, .05, 'triangle', .05) } else G.beep(300 + Math.random() * 100, .02, 'square', .02); break;
+          }
+        }
+        blocks = blocks.filter(k => !k.dead);
+        for (const p of pickups) { const px = ox + (p.c + .5) * cell, py = oy + (p.r + .5) * cell; if (!p.got && Math.hypot(b.x - px, b.y - py) < BR + cell * .2) { p.got = 1; nBalls++; G.set('n', nBalls); G.beep(1100, .08, 'triangle') } }
+        pickups = pickups.filter(p => !p.got);
+      }
+    }
+    if (toFire === 0 && balls.every(b => b.done)) { balls = []; endRound() }
+  }
+  x.fillStyle = '#0b0820'; x.fillRect(0, 0, K.W, K.H);
+  x.fillStyle = '#130d2c'; x.fillRect(ox, oy, cell * COLS, cell * (ROWS + 1));
+  x.fillStyle = 'rgba(255,77,109,.5)'; x.fillRect(ox, oy + cell * ROWS, cell * COLS, 2);
+  for (const k of blocks) { const hue = (k.hp * 9 + 200) % 360; x.fillStyle = `hsl(${hue},80%,55%)`; x.fillRect(ox + k.c * cell + 2, oy + k.r * cell + 2, cell - 4, cell - 4); x.fillStyle = '#fff'; x.font = `800 ${cell * .36}px system-ui`; x.textAlign = 'center'; x.textBaseline = 'middle'; x.fillText(k.hp, ox + (k.c + .5) * cell, oy + (k.r + .52) * cell) }
+  for (const p of pickups) { const px = ox + (p.c + .5) * cell, py = oy + (p.r + .5) * cell; x.strokeStyle = '#4dff88'; x.lineWidth = 3; x.beginPath(); x.arc(px, py, cell * .2, 0, 7); x.stroke(); x.fillStyle = '#4dff88'; x.beginPath(); x.arc(px, py, 5, 0, 7); x.fill() }
+  x.fillStyle = '#fff'; for (const b of balls) { x.beginPath(); x.arc(b.x, b.y, BR, 0, 7); x.fill() }
+  if (run && !firing) {
+    x.beginPath(); x.arc(launchX, floorY() - BR, BR, 0, 7); x.fill(); x.font = '700 12px system-ui'; x.textAlign = 'center'; x.fillText('×' + nBalls, launchX, floorY() + 16);
+    if (aim) { const a = Math.atan2(aim.y - floorY(), aim.x - launchX); if (Math.sin(a) < -.08) { x.fillStyle = 'rgba(255,255,255,.5)'; for (let i = 1; i < 14; i++) { x.beginPath(); x.arc(launchX + Math.cos(a) * i * 28, floorY() - BR + Math.sin(a) * i * 28, 3, 0, 7); x.fill() } } }
+  }
+});
+G.overlay('Ballz', 'Drag to aim, let go to fire all your balls.<br>Each hit takes 1 off a block\'s number. Grab green rings for more balls.<br>Don\'t let blocks reach the bottom line!', 'Start', start);
+</script></body></html>

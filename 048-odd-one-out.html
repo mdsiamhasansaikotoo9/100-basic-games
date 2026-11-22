@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Odd One Out</title><script>
+// Shared helpers for every arcade game
+const G = (() => {
+  const st = document.createElement('style');
+  st.textContent = `
+html,body{margin:0;height:100%;background:#0b0820;color:#fff;font-family:system-ui,-apple-system,sans-serif;overflow:hidden;
+  touch-action:none;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
+.hud{position:fixed;top:12px;left:0;right:0;display:flex;justify-content:space-between;padding:0 18px;font-weight:700;
+  letter-spacing:1px;z-index:5;pointer-events:none;color:#cfe8ff}
+.hud b{color:#fff;font-size:20px;text-shadow:0 0 10px #3df5ff}
+.ov{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  background:rgba(8,5,25,.85);z-index:10;text-align:center;padding:20px}
+.ov h1{margin:0 0 10px;font-size:clamp(30px,8vw,52px);background:linear-gradient(90deg,#3df5ff,#ff3df0);
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.ov p{opacity:.88;line-height:1.6;max-width:340px;margin:6px 0}
+.ov button{margin-top:18px;font:inherit;font-weight:800;font-size:18px;padding:13px 34px;border:0;border-radius:999px;
+  background:linear-gradient(90deg,#3df5ff,#ff3df0);color:#0b0820;cursor:pointer}
+`;
+  document.head.appendChild(st);
+
+  let ac;
+  function beep(f, d = .08, type = 'sine', v = .1) {
+    try {
+      ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.type = type; o.frequency.value = f;
+      g.gain.setValueAtTime(v, ac.currentTime);
+      g.gain.exponentialRampToValueAtTime(.001, ac.currentTime + d);
+      o.connect(g).connect(ac.destination); o.start(); o.stop(ac.currentTime + d);
+    } catch (e) {}
+  }
+  function getBest(k) { try { return +localStorage.getItem('arc_' + k) || 0 } catch (e) { return 0 } }
+  function setBest(k, v) { try { localStorage.setItem('arc_' + k, v) } catch (e) {} }
+  // Save if higher (or lower when lowerIsBetter). Returns current best.
+  function best(k, v, lowerIsBetter) {
+    const b = getBest(k);
+    if (v != null && (!b || (lowerIsBetter ? v < b : v > b))) { setBest(k, v); return v }
+    return b;
+  }
+  function set(id, v) { const e = document.getElementById(id); if (e) e.textContent = v }
+
+  function overlay(title, html, btn, cb) {
+    let o = document.querySelector('.ov');
+    if (!o) { o = document.createElement('div'); o.className = 'ov'; document.body.appendChild(o) }
+    o.innerHTML = `<h1>${title}</h1><p>${html}</p><button>${btn}</button>`;
+    o.style.display = 'flex';
+    o.addEventListener('pointerdown', e => e.stopPropagation());
+    o.querySelector('button').onclick = e => { e.stopPropagation(); o.style.display = 'none'; beep(440, .08, 'triangle'); cb() };
+  }
+
+  // Swipe (touch/mouse) + arrow keys / WASD → 'L','R','U','D'
+  function swipe(cb) {
+    let sx = null, sy = null;
+    addEventListener('pointerdown', e => { sx = e.clientX; sy = e.clientY });
+    addEventListener('pointerup', e => {
+      if (sx == null) return;
+      const dx = e.clientX - sx, dy = e.clientY - sy; sx = null;
+      if (Math.max(Math.abs(dx), Math.abs(dy)) < 20) return;
+      cb(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'R' : 'L') : (dy > 0 ? 'D' : 'U'));
+    });
+    addEventListener('keydown', e => {
+      const m = { ArrowLeft: 'L', ArrowRight: 'R', ArrowUp: 'U', ArrowDown: 'D', a: 'L', d: 'R', w: 'U', s: 'D' }[e.key];
+      if (m) { e.preventDefault(); cb(m) }
+    });
+  }
+
+  // Full-screen crisp canvas. Returns {c, x, W, H}; set .onresize to react.
+  function canvas() {
+    const c = document.createElement('canvas');
+    c.style.cssText = 'display:block;width:100vw;height:100vh';
+    document.body.prepend(c);
+    const o = { c, x: c.getContext('2d'), W: 0, H: 0 };
+    function r() {
+      const d = Math.min(devicePixelRatio || 1, 2);
+      o.W = innerWidth; o.H = innerHeight; c.width = o.W * d; c.height = o.H * d;
+      o.x.setTransform(d, 0, 0, d, 0, 0); o.onresize && o.onresize();
+    }
+    addEventListener('resize', r); r();
+    return o;
+  }
+
+  // Game loop with delta time (seconds, capped)
+  function loop(fn) {
+    let last = performance.now();
+    function f(t) { const dt = Math.min(.05, (t - last) / 1000); last = t; fn(dt); requestAnimationFrame(f) }
+    requestAnimationFrame(f);
+  }
+
+  return { beep, getBest, setBest, best, set, overlay, swipe, canvas, loop };
+})();
+
+</script>
+<style>
+#g{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);width:min(92vw,62vh,440px);aspect-ratio:1;display:grid;gap:4px}
+.e{display:flex;align-items:center;justify-content:center;cursor:pointer;border-radius:8px;background:rgba(255,255,255,.04);line-height:1}
+.e.no{background:#a01340}.e.yes{background:#13a05a}
+</style></head><body>
+<div class="hud"><span>Found <b id="s">0</b></span><span>Time <b id="t">30</b></span><span>Best <b id="b">0</b></span></div>
+<div id="g"></div>
+<script>
+const PAIRS = [['😀', '😃'], ['😄', '😁'], ['😺', '😸'], ['🌕', '🌝'], ['🕐', '🕑'], ['🔴', '🟠'], ['🟦', '🔷'], ['🍏', '🍎'], ['🌲', '🌳'], ['🚗', '🚙'], ['❤️', '🧡'], ['😐', '😑'], ['🐻', '🐨'], ['🍊', '🍑'], ['⭐', '🌟'], ['🙂', '😊'], ['🐭', '🐹'], ['🍋', '🍌'], ['🥐', '🥨'], ['🔵', '🟣'], ['🌑', '🌚'], ['😮', '😯'], ['🐸', '🐢'], ['🚌', '🚎']];
+const g = document.getElementById('g');
+let found = 0, time = 0, run = false, odd, busy = false;
+G.set('b', G.best('oddone'));
+function round() {
+  const n = Math.min(3 + (found / 2 | 0), 9), [a, b] = PAIRS[Math.random() * PAIRS.length | 0].sort(() => Math.random() - .5);
+  odd = Math.random() * n * n | 0; g.style.gridTemplateColumns = `repeat(${n},1fr)`; g.innerHTML = '';
+  for (let i = 0; i < n * n; i++) {
+    const d = document.createElement('div'); d.className = 'e'; d.textContent = i === odd ? b : a; d.style.fontSize = `min(${70 / n}vw,${46 / n}vh,${300 / n}px)`;
+    d.addEventListener('pointerdown', () => tap(i, d)); g.appendChild(d);
+  }
+  busy = false;
+}
+function tap(i, d) {
+  if (!run || busy) return;
+  if (i === odd) { busy = true; found++; G.set('s', found); time += 1; d.classList.add('yes'); G.beep(600 + Math.min(found, 30) * 20, .08, 'triangle'); setTimeout(round, 250) }
+  else { time -= 2; d.classList.add('no'); G.beep(150, .15, 'sawtooth'); setTimeout(() => d.classList.remove('no'), 250) }
+}
+function start() { found = 0; time = 30; run = true; G.set('s', 0); round() }
+G.loop(dt => {
+  if (!run) return; time -= dt; G.set('t', Math.max(0, Math.ceil(time)));
+  if (time <= 0) { run = false; g.children[odd] && g.children[odd].classList.add('yes'); G.set('b', G.best('oddone', found)); setTimeout(() => G.overlay("Time's up!", 'You found ' + found + '.', 'Play again', start), 600) }
+});
+G.overlay('Odd One Out', 'One emoji is slightly different from all the others.<br>Find it and tap it!<br>Right = +1 second. Wrong = −2 seconds.', 'Start', start);
+</script></body></html>

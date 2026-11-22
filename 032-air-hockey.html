@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Air Hockey</title><script>
+// Shared helpers for every arcade game
+const G = (() => {
+  const st = document.createElement('style');
+  st.textContent = `
+html,body{margin:0;height:100%;background:#0b0820;color:#fff;font-family:system-ui,-apple-system,sans-serif;overflow:hidden;
+  touch-action:none;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
+.hud{position:fixed;top:12px;left:0;right:0;display:flex;justify-content:space-between;padding:0 18px;font-weight:700;
+  letter-spacing:1px;z-index:5;pointer-events:none;color:#cfe8ff}
+.hud b{color:#fff;font-size:20px;text-shadow:0 0 10px #3df5ff}
+.ov{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  background:rgba(8,5,25,.85);z-index:10;text-align:center;padding:20px}
+.ov h1{margin:0 0 10px;font-size:clamp(30px,8vw,52px);background:linear-gradient(90deg,#3df5ff,#ff3df0);
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.ov p{opacity:.88;line-height:1.6;max-width:340px;margin:6px 0}
+.ov button{margin-top:18px;font:inherit;font-weight:800;font-size:18px;padding:13px 34px;border:0;border-radius:999px;
+  background:linear-gradient(90deg,#3df5ff,#ff3df0);color:#0b0820;cursor:pointer}
+`;
+  document.head.appendChild(st);
+
+  let ac;
+  function beep(f, d = .08, type = 'sine', v = .1) {
+    try {
+      ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.type = type; o.frequency.value = f;
+      g.gain.setValueAtTime(v, ac.currentTime);
+      g.gain.exponentialRampToValueAtTime(.001, ac.currentTime + d);
+      o.connect(g).connect(ac.destination); o.start(); o.stop(ac.currentTime + d);
+    } catch (e) {}
+  }
+  function getBest(k) { try { return +localStorage.getItem('arc_' + k) || 0 } catch (e) { return 0 } }
+  function setBest(k, v) { try { localStorage.setItem('arc_' + k, v) } catch (e) {} }
+  // Save if higher (or lower when lowerIsBetter). Returns current best.
+  function best(k, v, lowerIsBetter) {
+    const b = getBest(k);
+    if (v != null && (!b || (lowerIsBetter ? v < b : v > b))) { setBest(k, v); return v }
+    return b;
+  }
+  function set(id, v) { const e = document.getElementById(id); if (e) e.textContent = v }
+
+  function overlay(title, html, btn, cb) {
+    let o = document.querySelector('.ov');
+    if (!o) { o = document.createElement('div'); o.className = 'ov'; document.body.appendChild(o) }
+    o.innerHTML = `<h1>${title}</h1><p>${html}</p><button>${btn}</button>`;
+    o.style.display = 'flex';
+    o.addEventListener('pointerdown', e => e.stopPropagation());
+    o.querySelector('button').onclick = e => { e.stopPropagation(); o.style.display = 'none'; beep(440, .08, 'triangle'); cb() };
+  }
+
+  // Swipe (touch/mouse) + arrow keys / WASD → 'L','R','U','D'
+  function swipe(cb) {
+    let sx = null, sy = null;
+    addEventListener('pointerdown', e => { sx = e.clientX; sy = e.clientY });
+    addEventListener('pointerup', e => {
+      if (sx == null) return;
+      const dx = e.clientX - sx, dy = e.clientY - sy; sx = null;
+      if (Math.max(Math.abs(dx), Math.abs(dy)) < 20) return;
+      cb(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'R' : 'L') : (dy > 0 ? 'D' : 'U'));
+    });
+    addEventListener('keydown', e => {
+      const m = { ArrowLeft: 'L', ArrowRight: 'R', ArrowUp: 'U', ArrowDown: 'D', a: 'L', d: 'R', w: 'U', s: 'D' }[e.key];
+      if (m) { e.preventDefault(); cb(m) }
+    });
+  }
+
+  // Full-screen crisp canvas. Returns {c, x, W, H}; set .onresize to react.
+  function canvas() {
+    const c = document.createElement('canvas');
+    c.style.cssText = 'display:block;width:100vw;height:100vh';
+    document.body.prepend(c);
+    const o = { c, x: c.getContext('2d'), W: 0, H: 0 };
+    function r() {
+      const d = Math.min(devicePixelRatio || 1, 2);
+      o.W = innerWidth; o.H = innerHeight; c.width = o.W * d; c.height = o.H * d;
+      o.x.setTransform(d, 0, 0, d, 0, 0); o.onresize && o.onresize();
+    }
+    addEventListener('resize', r); r();
+    return o;
+  }
+
+  // Game loop with delta time (seconds, capped)
+  function loop(fn) {
+    let last = performance.now();
+    function f(t) { const dt = Math.min(.05, (t - last) / 1000); last = t; fn(dt); requestAnimationFrame(f) }
+    requestAnimationFrame(f);
+  }
+
+  return { beep, getBest, setBest, best, set, overlay, swipe, canvas, loop };
+})();
+
+</script></head><body>
+<div class="hud"><span>You <b id="p">0</b></span><span>Wins <b id="b">0</b></span><span>CPU <b id="c">0</b></span></div>
+<script>
+const K = G.canvas(), x = K.x, WIN = 7;
+let me = null, cpu, puck, ps = 0, cs = 0, run = false, wait = 0, tgt = null;
+G.set('b', G.getBest('airhockey'));
+const T = () => ({ l: 12, r: K.W - 12, t: 50, b: K.H - 50 }), GW = () => Math.max(90, K.W * .4);
+const MR = () => Math.max(24, Math.min(K.W, K.H) * .07), PR = () => MR() * .62;
+function reset(toward) { const t = T(); puck = { x: K.W / 2, y: (t.t + t.b) / 2 + toward * 60, vx: 0, vy: 0 }; wait = .6 }
+function start() {
+  const t = T(); me = { x: K.W / 2, y: t.b - 80, vx: 0, vy: 0 }; cpu = { x: K.W / 2, y: t.t + 80, vx: 0, vy: 0 }; tgt = { x: me.x, y: me.y };
+  ps = cs = 0; G.set('p', 0); G.set('c', 0); reset(1); run = true;
+}
+const mv = e => { if (tgt) { tgt.x = e.clientX; tgt.y = e.clientY } };
+addEventListener('pointermove', mv); addEventListener('pointerdown', mv);
+function moveM(m, tx, ty, maxSp, dt, top) {
+  const t = T(), mid = (t.t + t.b) / 2, r = MR();
+  tx = Math.max(t.l + r, Math.min(t.r - r, tx));
+  ty = top ? Math.max(t.t + r, Math.min(mid - r, ty)) : Math.max(mid + r, Math.min(t.b - r, ty));
+  let dx = tx - m.x, dy = ty - m.y; const d = Math.hypot(dx, dy), step = maxSp * dt;
+  if (d > step) { dx = dx / d * step; dy = dy / d * step }
+  m.vx = dx / dt; m.vy = dy / dt; m.x += dx; m.y += dy;
+}
+function hitM(m) {
+  const r = MR() + PR(), dx = puck.x - m.x, dy = puck.y - m.y, d = Math.hypot(dx, dy);
+  if (d < r && d > 0) {
+    const nx = dx / d, ny = dy / d; puck.x = m.x + nx * r; puck.y = m.y + ny * r;
+    const rv = (puck.vx - m.vx) * nx + (puck.vy - m.vy) * ny;
+    if (rv < 0) { puck.vx -= 1.9 * rv * nx; puck.vy -= 1.9 * rv * ny }
+    const sp = Math.hypot(puck.vx, puck.vy), mx = K.H * 1.6; if (sp > mx) { puck.vx *= mx / sp; puck.vy *= mx / sp }
+    G.beep(260, .03, 'square', .05);
+  }
+}
+function goal(you) {
+  if (you) { ps++; G.beep(880, .25, 'triangle') } else { cs++; G.beep(150, .3, 'sawtooth') }
+  G.set('p', ps); G.set('c', cs);
+  if (ps >= WIN || cs >= WIN) {
+    run = false; if (ps >= WIN) { const w = G.getBest('airhockey') + 1; G.setBest('airhockey', w); G.set('b', w) }
+    G.overlay(ps >= WIN ? 'You win! 🏆' : 'CPU wins', ps + ' – ' + cs, 'Play again', start);
+  } else reset(you ? -1 : 1);
+}
+G.loop(dt => {
+  dt = Math.max(dt, .001);
+  if (run) {
+    const t = T(), mid = (t.t + t.b) / 2;
+    moveM(me, tgt.x, tgt.y, 3000, dt, false);
+    // CPU: attack when puck on its side, else guard goal
+    const onSide = puck.y < mid, cx = onSide ? puck.x : K.W / 2 + (puck.x - K.W / 2) * .5, cy = onSide ? puck.y - MR() * .5 : t.t + 70;
+    moveM(cpu, cx, cy, K.H * (.75 + ps * .06), dt, true);
+    if (wait > 0) wait -= dt;
+    else {
+      for (let k = 0; k < 3; k++) {
+        const st = dt / 3; puck.x += puck.vx * st; puck.y += puck.vy * st;
+        const pr = PR();
+        if (puck.x < t.l + pr) { puck.x = t.l + pr; puck.vx = Math.abs(puck.vx) * .9; G.beep(180, .02, 'square', .03) }
+        if (puck.x > t.r - pr) { puck.x = t.r - pr; puck.vx = -Math.abs(puck.vx) * .9; G.beep(180, .02, 'square', .03) }
+        const inGoal = Math.abs(puck.x - K.W / 2) < GW() / 2;
+        if (puck.y < t.t + pr) { if (inGoal) { if (puck.y < t.t - pr) { goal(true); break } } else { puck.y = t.t + pr; puck.vy = Math.abs(puck.vy) * .9 } }
+        if (puck.y > t.b - pr) { if (inGoal) { if (puck.y > t.b + pr) { goal(false); break } } else { puck.y = t.b - pr; puck.vy = -Math.abs(puck.vy) * .9 } }
+        hitM(me); hitM(cpu);
+      }
+      const f = Math.pow(.6, dt); puck.vx *= f; puck.vy *= f;
+    }
+  }
+  // draw
+  const t = T(); x.fillStyle = '#0b0820'; x.fillRect(0, 0, K.W, K.H);
+  x.fillStyle = '#120c33'; x.fillRect(t.l, t.t, t.r - t.l, t.b - t.t);
+  x.strokeStyle = '#3df5ff'; x.lineWidth = 3; x.shadowColor = '#3df5ff'; x.shadowBlur = 10; x.strokeRect(t.l, t.t, t.r - t.l, t.b - t.t);
+  const mid = (t.t + t.b) / 2; x.strokeStyle = 'rgba(255,61,240,.5)'; x.beginPath(); x.moveTo(t.l, mid); x.lineTo(t.r, mid); x.stroke();
+  x.beginPath(); x.arc(K.W / 2, mid, 50, 0, 7); x.stroke();
+  x.fillStyle = '#ffe35a'; x.shadowColor = '#ffe35a'; x.fillRect(K.W / 2 - GW() / 2, t.t - 4, GW(), 6); x.fillRect(K.W / 2 - GW() / 2, t.b - 2, GW(), 6);
+  if (me) {
+    const ring = (m, c) => { x.shadowColor = c; x.fillStyle = c; x.beginPath(); x.arc(m.x, m.y, MR(), 0, 7); x.fill(); x.fillStyle = 'rgba(0,0,0,.35)'; x.beginPath(); x.arc(m.x, m.y, MR() * .5, 0, 7); x.fill() };
+    ring(me, '#3df5ff'); ring(cpu, '#ff3df0');
+    x.shadowColor = '#fff'; x.fillStyle = '#fff'; x.beginPath(); x.arc(puck.x, puck.y, PR(), 0, 7); x.fill();
+  }
+  x.shadowBlur = 0;
+});
+G.overlay('Air Hockey', 'Drag your blue mallet around your half.<br>Hit the puck into the CPU\'s yellow goal at the top.<br>First to 7 wins.', 'Start', start);
+</script></body></html>

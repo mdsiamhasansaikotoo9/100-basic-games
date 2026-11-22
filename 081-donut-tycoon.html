@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Donut Tycoon</title><script>
+// Shared helpers for every arcade game
+const G = (() => {
+  const st = document.createElement('style');
+  st.textContent = `
+html,body{margin:0;height:100%;background:#0b0820;color:#fff;font-family:system-ui,-apple-system,sans-serif;overflow:hidden;
+  touch-action:none;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
+.hud{position:fixed;top:12px;left:0;right:0;display:flex;justify-content:space-between;padding:0 18px;font-weight:700;
+  letter-spacing:1px;z-index:5;pointer-events:none;color:#cfe8ff}
+.hud b{color:#fff;font-size:20px;text-shadow:0 0 10px #3df5ff}
+.ov{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  background:rgba(8,5,25,.85);z-index:10;text-align:center;padding:20px}
+.ov h1{margin:0 0 10px;font-size:clamp(30px,8vw,52px);background:linear-gradient(90deg,#3df5ff,#ff3df0);
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.ov p{opacity:.88;line-height:1.6;max-width:340px;margin:6px 0}
+.ov button{margin-top:18px;font:inherit;font-weight:800;font-size:18px;padding:13px 34px;border:0;border-radius:999px;
+  background:linear-gradient(90deg,#3df5ff,#ff3df0);color:#0b0820;cursor:pointer}
+`;
+  document.head.appendChild(st);
+
+  let ac;
+  function beep(f, d = .08, type = 'sine', v = .1) {
+    try {
+      ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.type = type; o.frequency.value = f;
+      g.gain.setValueAtTime(v, ac.currentTime);
+      g.gain.exponentialRampToValueAtTime(.001, ac.currentTime + d);
+      o.connect(g).connect(ac.destination); o.start(); o.stop(ac.currentTime + d);
+    } catch (e) {}
+  }
+  function getBest(k) { try { return +localStorage.getItem('arc_' + k) || 0 } catch (e) { return 0 } }
+  function setBest(k, v) { try { localStorage.setItem('arc_' + k, v) } catch (e) {} }
+  // Save if higher (or lower when lowerIsBetter). Returns current best.
+  function best(k, v, lowerIsBetter) {
+    const b = getBest(k);
+    if (v != null && (!b || (lowerIsBetter ? v < b : v > b))) { setBest(k, v); return v }
+    return b;
+  }
+  function set(id, v) { const e = document.getElementById(id); if (e) e.textContent = v }
+
+  function overlay(title, html, btn, cb) {
+    let o = document.querySelector('.ov');
+    if (!o) { o = document.createElement('div'); o.className = 'ov'; document.body.appendChild(o) }
+    o.innerHTML = `<h1>${title}</h1><p>${html}</p><button>${btn}</button>`;
+    o.style.display = 'flex';
+    o.addEventListener('pointerdown', e => e.stopPropagation());
+    o.querySelector('button').onclick = e => { e.stopPropagation(); o.style.display = 'none'; beep(440, .08, 'triangle'); cb() };
+  }
+
+  // Swipe (touch/mouse) + arrow keys / WASD → 'L','R','U','D'
+  function swipe(cb) {
+    let sx = null, sy = null;
+    addEventListener('pointerdown', e => { sx = e.clientX; sy = e.clientY });
+    addEventListener('pointerup', e => {
+      if (sx == null) return;
+      const dx = e.clientX - sx, dy = e.clientY - sy; sx = null;
+      if (Math.max(Math.abs(dx), Math.abs(dy)) < 20) return;
+      cb(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'R' : 'L') : (dy > 0 ? 'D' : 'U'));
+    });
+    addEventListener('keydown', e => {
+      const m = { ArrowLeft: 'L', ArrowRight: 'R', ArrowUp: 'U', ArrowDown: 'D', a: 'L', d: 'R', w: 'U', s: 'D' }[e.key];
+      if (m) { e.preventDefault(); cb(m) }
+    });
+  }
+
+  // Full-screen crisp canvas. Returns {c, x, W, H}; set .onresize to react.
+  function canvas() {
+    const c = document.createElement('canvas');
+    c.style.cssText = 'display:block;width:100vw;height:100vh';
+    document.body.prepend(c);
+    const o = { c, x: c.getContext('2d'), W: 0, H: 0 };
+    function r() {
+      const d = Math.min(devicePixelRatio || 1, 2);
+      o.W = innerWidth; o.H = innerHeight; c.width = o.W * d; c.height = o.H * d;
+      o.x.setTransform(d, 0, 0, d, 0, 0); o.onresize && o.onresize();
+    }
+    addEventListener('resize', r); r();
+    return o;
+  }
+
+  // Game loop with delta time (seconds, capped)
+  function loop(fn) {
+    let last = performance.now();
+    function f(t) { const dt = Math.min(.05, (t - last) / 1000); last = t; fn(dt); requestAnimationFrame(f) }
+    requestAnimationFrame(f);
+  }
+
+  return { beep, getBest, setBest, best, set, overlay, swipe, canvas, loop };
+})();
+
+</script>
+<style>
+html,body{overflow:auto!important;touch-action:manipulation!important}
+#wrap{max-width:460px;margin:0 auto;padding:56px 14px 70px}
+#count{text-align:center;font-size:clamp(30px,9vw,44px);font-weight:900;text-shadow:0 0 14px #ff3df0}
+#rate{text-align:center;color:#cfe8ff;margin-bottom:10px}
+#donut{display:block;margin:6px auto 16px;font-size:clamp(110px,34vw,160px);background:none;border:0;cursor:pointer;transition:transform .07s;line-height:1;filter:drop-shadow(0 0 20px rgba(255,61,240,.5))}
+#donut:active{transform:scale(.92)}
+.up{display:flex;align-items:center;gap:10px;width:100%;margin:6px 0;padding:10px 12px;border-radius:14px;border:1px solid rgba(255,255,255,.12);background:rgba(255,255,255,.05);color:#fff;font:inherit;text-align:left;cursor:pointer}
+.up:disabled{opacity:.4}.up .i{font-size:28px}.up .n{font-weight:800}.up .d{font-size:12px;color:#cfe8ff;opacity:.8}.up .c{margin-left:auto;font-weight:900;color:#ffe35a;white-space:nowrap}.up .o{font-size:12px;opacity:.7}
+.fl{position:fixed;pointer-events:none;font-weight:900;color:#ffe35a;animation:up .8s forwards;z-index:30}@keyframes up{to{transform:translateY(-60px);opacity:0}}
+#reset{display:block;margin:18px auto 0;background:none;border:1px solid rgba(255,255,255,.2);color:#cfe8ff;border-radius:999px;padding:6px 14px;font:inherit;font-size:12px}
+</style></head><body>
+<div class="hud" style="position:fixed"><span>Total made <b id="tot">0</b></span><span>Best <b id="b">0</b></span></div>
+<div id="wrap"><div id="count">0 🍩</div><div id="rate">0 per second</div><button id="donut">🍩</button><div id="ups"></div><button id="reset">Start over</button></div>
+<script>
+const UPS = [
+  { id: 'tap', i: '👆', n: 'Bigger Hands', d: '+1 donut per tap', base: 15, tap: 1 },
+  { id: 'helper', i: '🧑‍🍳', n: 'Helper', d: '+1 per second', base: 25, ps: 1 },
+  { id: 'oven', i: '🔥', n: 'Oven', d: '+5 per second', base: 150, ps: 5 },
+  { id: 'van', i: '🚚', n: 'Donut Van', d: '+20 per second', base: 900, ps: 20 },
+  { id: 'shop', i: '🏪', n: 'Shop', d: '+80 per second', base: 5000, ps: 80 },
+  { id: 'factory', i: '🏭', n: 'Factory', d: '+400 per second', base: 30000, ps: 400 },
+  { id: 'rocket', i: '🚀', n: 'Space Bakery', d: '+2,500 per second', base: 250000, ps: 2500 },
+];
+let S = { d: 0, tot: 0, own: {} };
+try { const saved = JSON.parse(localStorage.getItem('arc_tycoon_save') || 'null'); if (saved) S = saved } catch (e) {}
+const own = id => S.own[id] || 0, cost = u => Math.ceil(u.base * Math.pow(1.15, own(u.id)));
+const perTap = () => 1 + own('tap'), perSec = () => UPS.reduce((s, u) => s + (u.ps || 0) * own(u.id), 0);
+const fmt = n => n >= 1e9 ? (n / 1e9).toFixed(2) + 'B' : n >= 1e6 ? (n / 1e6).toFixed(2) + 'M' : n >= 1e4 ? (n / 1e3).toFixed(1) + 'K' : Math.floor(n).toLocaleString();
+const save = () => { try { localStorage.setItem('arc_tycoon_save', JSON.stringify(S)) } catch (e) {} };
+const ups = document.getElementById('ups');
+UPS.forEach(u => { const b = document.createElement('button'); b.className = 'up'; b.id = 'u_' + u.id; b.onclick = () => buy(u); ups.appendChild(b) });
+function render() {
+  G.set('count', fmt(S.d) + ' 🍩'); G.set('rate', fmt(perSec()) + ' per second · ' + perTap() + ' per tap'); G.set('tot', fmt(S.tot));
+  UPS.forEach(u => { const b = document.getElementById('u_' + u.id), c = cost(u); b.disabled = S.d < c; b.style.display = S.tot >= u.base * .5 || own(u.id) ? 'flex' : 'none';
+    b.innerHTML = `<span class="i">${u.i}</span><span><div class="n">${u.n} <span class="o">× ${own(u.id)}</span></div><div class="d">${u.d}</div></span><span class="c">${fmt(c)} 🍩</span>` });
+  const best = G.getBest('tycoon'); if (S.tot > best) G.setBest('tycoon', Math.floor(S.tot)); G.set('b', fmt(Math.max(best, S.tot)));
+}
+function buy(u) { const c = cost(u); if (S.d < c) return; S.d -= c; S.own[u.id] = own(u.id) + 1; G.beep(700, .1, 'triangle'); save(); render() }
+document.getElementById('donut').addEventListener('pointerdown', e => {
+  const n = perTap(); S.d += n; S.tot += n; G.beep(500 + Math.random() * 200, .04, 'triangle', .06);
+  const f = document.createElement('div'); f.className = 'fl'; f.textContent = '+' + n; f.style.left = e.clientX - 10 + 'px'; f.style.top = e.clientY - 20 + 'px'; document.body.appendChild(f); setTimeout(() => f.remove(), 800);
+  render();
+});
+document.getElementById('reset').onclick = () => { if (document.getElementById('reset').dataset.sure) { S = { d: 0, tot: 0, own: {} }; save(); render(); document.getElementById('reset').textContent = 'Start over'; delete document.getElementById('reset').dataset.sure } else { document.getElementById('reset').dataset.sure = 1; document.getElementById('reset').textContent = 'Tap again to really start over' } };
+let acc = 0, saveT = 0;
+G.loop(dt => { const p = perSec() * dt; S.d += p; S.tot += p; acc += dt; saveT += dt; if (acc > .2) { acc = 0; render() } if (saveT > 3) { saveT = 0; save() } });
+render();
+if (!S.tot) G.overlay('Donut Tycoon', 'Tap the donut to make donuts.<br>Spend donuts on helpers and machines that make donuts for you — even while you watch!<br>Progress saves on this device. How big can your bakery grow?', 'Start baking', () => {});
+</script></body></html>

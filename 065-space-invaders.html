@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Space Invaders</title><script>
+// Shared helpers for every arcade game
+const G = (() => {
+  const st = document.createElement('style');
+  st.textContent = `
+html,body{margin:0;height:100%;background:#0b0820;color:#fff;font-family:system-ui,-apple-system,sans-serif;overflow:hidden;
+  touch-action:none;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
+.hud{position:fixed;top:12px;left:0;right:0;display:flex;justify-content:space-between;padding:0 18px;font-weight:700;
+  letter-spacing:1px;z-index:5;pointer-events:none;color:#cfe8ff}
+.hud b{color:#fff;font-size:20px;text-shadow:0 0 10px #3df5ff}
+.ov{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  background:rgba(8,5,25,.85);z-index:10;text-align:center;padding:20px}
+.ov h1{margin:0 0 10px;font-size:clamp(30px,8vw,52px);background:linear-gradient(90deg,#3df5ff,#ff3df0);
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.ov p{opacity:.88;line-height:1.6;max-width:340px;margin:6px 0}
+.ov button{margin-top:18px;font:inherit;font-weight:800;font-size:18px;padding:13px 34px;border:0;border-radius:999px;
+  background:linear-gradient(90deg,#3df5ff,#ff3df0);color:#0b0820;cursor:pointer}
+`;
+  document.head.appendChild(st);
+
+  let ac;
+  function beep(f, d = .08, type = 'sine', v = .1) {
+    try {
+      ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.type = type; o.frequency.value = f;
+      g.gain.setValueAtTime(v, ac.currentTime);
+      g.gain.exponentialRampToValueAtTime(.001, ac.currentTime + d);
+      o.connect(g).connect(ac.destination); o.start(); o.stop(ac.currentTime + d);
+    } catch (e) {}
+  }
+  function getBest(k) { try { return +localStorage.getItem('arc_' + k) || 0 } catch (e) { return 0 } }
+  function setBest(k, v) { try { localStorage.setItem('arc_' + k, v) } catch (e) {} }
+  // Save if higher (or lower when lowerIsBetter). Returns current best.
+  function best(k, v, lowerIsBetter) {
+    const b = getBest(k);
+    if (v != null && (!b || (lowerIsBetter ? v < b : v > b))) { setBest(k, v); return v }
+    return b;
+  }
+  function set(id, v) { const e = document.getElementById(id); if (e) e.textContent = v }
+
+  function overlay(title, html, btn, cb) {
+    let o = document.querySelector('.ov');
+    if (!o) { o = document.createElement('div'); o.className = 'ov'; document.body.appendChild(o) }
+    o.innerHTML = `<h1>${title}</h1><p>${html}</p><button>${btn}</button>`;
+    o.style.display = 'flex';
+    o.addEventListener('pointerdown', e => e.stopPropagation());
+    o.querySelector('button').onclick = e => { e.stopPropagation(); o.style.display = 'none'; beep(440, .08, 'triangle'); cb() };
+  }
+
+  // Swipe (touch/mouse) + arrow keys / WASD → 'L','R','U','D'
+  function swipe(cb) {
+    let sx = null, sy = null;
+    addEventListener('pointerdown', e => { sx = e.clientX; sy = e.clientY });
+    addEventListener('pointerup', e => {
+      if (sx == null) return;
+      const dx = e.clientX - sx, dy = e.clientY - sy; sx = null;
+      if (Math.max(Math.abs(dx), Math.abs(dy)) < 20) return;
+      cb(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'R' : 'L') : (dy > 0 ? 'D' : 'U'));
+    });
+    addEventListener('keydown', e => {
+      const m = { ArrowLeft: 'L', ArrowRight: 'R', ArrowUp: 'U', ArrowDown: 'D', a: 'L', d: 'R', w: 'U', s: 'D' }[e.key];
+      if (m) { e.preventDefault(); cb(m) }
+    });
+  }
+
+  // Full-screen crisp canvas. Returns {c, x, W, H}; set .onresize to react.
+  function canvas() {
+    const c = document.createElement('canvas');
+    c.style.cssText = 'display:block;width:100vw;height:100vh';
+    document.body.prepend(c);
+    const o = { c, x: c.getContext('2d'), W: 0, H: 0 };
+    function r() {
+      const d = Math.min(devicePixelRatio || 1, 2);
+      o.W = innerWidth; o.H = innerHeight; c.width = o.W * d; c.height = o.H * d;
+      o.x.setTransform(d, 0, 0, d, 0, 0); o.onresize && o.onresize();
+    }
+    addEventListener('resize', r); r();
+    return o;
+  }
+
+  // Game loop with delta time (seconds, capped)
+  function loop(fn) {
+    let last = performance.now();
+    function f(t) { const dt = Math.min(.05, (t - last) / 1000); last = t; fn(dt); requestAnimationFrame(f) }
+    requestAnimationFrame(f);
+  }
+
+  return { beep, getBest, setBest, best, set, overlay, swipe, canvas, loop };
+})();
+
+</script></head><body>
+<div class="hud"><span>Score <b id="s">0</b></span><span>Lives <b id="l">3</b></span><span>Best <b id="b">0</b></span></div>
+<script>
+const K = G.canvas(), x = K.x, AC = 8, AR = 5;
+let me = null, aliens = [], shots = [], bombs = [], parts = [], dir = 1, stepT = 0, score = 0, lives = 3, wave = 1, run = false, fireT = 0, inv = 0, keys = {}, frame = 0, ufo = null;
+G.set('b', G.best('invaders'));
+const AW = () => Math.min(K.W / (AC + 3), 40);
+function spawnWave() {
+  aliens = []; const w = AW(), x0 = (K.W - w * AC) / 2;
+  for (let r = 0; r < AR; r++) for (let c = 0; c < AC; c++) aliens.push({ x: x0 + c * w + w / 2, y: 80 + r * w * .85 + Math.min(wave - 1, 4) * 12, t: r < 1 ? 2 : r < 3 ? 1 : 0, alive: 1 });
+  dir = 1; stepT = 0;
+}
+function start() { me = { x: K.W / 2 }; shots = []; bombs = []; score = 0; lives = 3; wave = 1; run = true; G.set('s', 0); G.set('l', 3); spawnWave() }
+const mv = e => { if (me) me.x = e.clientX }; addEventListener('pointermove', mv); addEventListener('pointerdown', mv);
+addEventListener('keydown', e => keys[e.key] = 1); addEventListener('keyup', e => keys[e.key] = 0);
+function boom(px, py, c) { for (let i = 0; i < 14; i++) { const a = Math.random() * 7, v = Math.random() * 180; parts.push({ x: px, y: py, vx: Math.cos(a) * v, vy: Math.sin(a) * v, life: 1, c }) } }
+const SH = ['#4dff88', '#3df5ff', '#ff3df0'];
+function drawAlien(a, w) {
+  const s = w * .7, px = a.x, py = a.y, f = frame % 2; x.fillStyle = SH[a.t]; x.shadowColor = SH[a.t]; x.shadowBlur = 8;
+  x.fillRect(px - s * .35, py - s * .25, s * .7, s * .4); x.fillRect(px - s * .5, py - s * .05, s, s * .2);
+  x.fillRect(px - s * .5 + (f ? 0 : s * .1), py + s * .15, s * .15, s * .2); x.fillRect(px + s * .35 - (f ? 0 : s * .1), py + s * .15, s * .15, s * .2);
+  x.fillStyle = '#0b0820'; x.fillRect(px - s * .2, py - s * .15, s * .12, s * .12); x.fillRect(px + s * .08, py - s * .15, s * .12, s * .12); x.shadowBlur = 0;
+}
+G.loop(dt => {
+  for (const p of parts) { p.x += p.vx * dt; p.y += p.vy * dt; p.life -= dt * 1.6 } parts = parts.filter(p => p.life > 0);
+  if (run) {
+    inv = Math.max(0, inv - dt);
+    if (keys.ArrowLeft) me.x -= 500 * dt; if (keys.ArrowRight) me.x += 500 * dt; me.x = Math.max(20, Math.min(K.W - 20, me.x));
+    const py = K.H - 80;
+    fireT -= dt; if (fireT <= 0 && shots.length < 2) { fireT = .45; shots.push({ x: me.x, y: py - 18 }); G.beep(900, .03, 'square', .03) }
+    for (const s of shots) s.y -= 650 * dt;
+    const alive = aliens.filter(a => a.alive), w = AW();
+    stepT -= dt;
+    if (stepT <= 0) {
+      stepT = Math.max(.05, .6 * alive.length / (AC * AR) - wave * .02 + .05); frame++;
+      const minX = Math.min(...alive.map(a => a.x)), maxX = Math.max(...alive.map(a => a.x));
+      if ((dir > 0 && maxX + w * .6 > K.W - 6) || (dir < 0 && minX - w * .6 < 6)) { dir *= -1; alive.forEach(a => a.y += w * .5) } else alive.forEach(a => a.x += dir * w * .25);
+      G.beep(90 + (frame % 4) * 10, .05, 'square', .04);
+    }
+    if (Math.random() < dt * (.8 + wave * .3) && alive.length) { const cols = {}; alive.forEach(a => { const k = Math.round(a.x); if (!cols[k] || cols[k].y < a.y) cols[k] = a }); const arr = Object.values(cols), a = arr[Math.random() * arr.length | 0]; bombs.push({ x: a.x, y: a.y + 10 }) }
+    if (!ufo && Math.random() < dt * .08) ufo = { x: -30, d: 1 }; if (ufo) { ufo.x += 120 * dt; if (ufo.x > K.W + 40) ufo = null }
+    for (const b of bombs) b.y += (220 + wave * 20) * dt;
+    for (const s of shots) {
+      for (const a of alive) if (a.alive && Math.abs(s.x - a.x) < w * .4 && Math.abs(s.y - a.y) < w * .35) { a.alive = 0; s.dead = 1; score += (a.t + 1) * 10; G.set('s', score); boom(a.x, a.y, SH[a.t]); G.beep(300, .08, 'triangle', .07); break }
+      if (ufo && !s.dead && Math.abs(s.x - ufo.x) < 24 && Math.abs(s.y - 58) < 12) { s.dead = 1; score += 100; G.set('s', score); boom(ufo.x, 58, '#ff4d6d'); ufo = null; G.beep(1200, .2, 'triangle') }
+    }
+    shots = shots.filter(s => !s.dead && s.y > 40);
+    for (const b of bombs) if (!inv && Math.abs(b.x - me.x) < 18 && Math.abs(b.y - py) < 12) { b.dead = 1; lives--; inv = 1.5; G.set('l', lives); boom(me.x, py, '#3df5ff'); G.beep(110, .4, 'sawtooth'); }
+    bombs = bombs.filter(b => !b.dead && b.y < K.H);
+    if (lives <= 0 || alive.some(a => a.alive && a.y > py - 30)) { run = false; G.set('b', G.best('invaders', score)); G.overlay('Game Over', 'Score: ' + score + ' · Wave ' + wave, 'Play again', start) }
+    else if (!aliens.some(a => a.alive)) { wave++; G.beep(900, .3, 'triangle'); spawnWave() }
+  }
+  x.fillStyle = '#05030f'; x.fillRect(0, 0, K.W, K.H);
+  const w = AW(); for (const a of aliens) if (a.alive) drawAlien(a, w);
+  if (ufo) { x.fillStyle = '#ff4d6d'; x.shadowColor = '#ff4d6d'; x.shadowBlur = 12; x.beginPath(); x.ellipse(ufo.x, 58, 22, 8, 0, 0, 7); x.fill(); x.beginPath(); x.arc(ufo.x, 54, 9, Math.PI, 0); x.fill(); x.shadowBlur = 0 }
+  x.fillStyle = '#fff'; for (const s of shots) x.fillRect(s.x - 1.5, s.y - 8, 3, 12);
+  x.fillStyle = '#ffe35a'; for (const b of bombs) { x.fillRect(b.x - 2, b.y - 6, 4, 4); x.fillRect(b.x, b.y - 2, 4, 4); x.fillRect(b.x - 2, b.y + 2, 4, 4) }
+  if (me && (run ? !(inv && (inv * 10 | 0) % 2) : false)) { const py = K.H - 80; x.fillStyle = '#3df5ff'; x.shadowColor = '#3df5ff'; x.shadowBlur = 12; x.fillRect(me.x - 18, py - 4, 36, 12); x.fillRect(me.x - 4, py - 14, 8, 10); x.shadowBlur = 0 }
+  x.fillStyle = '#4dff88'; x.fillRect(0, K.H - 58, K.W, 2);
+  for (const p of parts) { x.globalAlpha = p.life; x.fillStyle = p.c; x.fillRect(p.x - 2, p.y - 2, 4, 4) } x.globalAlpha = 1;
+});
+G.overlay('Space Invaders', 'Drag (or arrow keys) to move. Your cannon fires by itself.<br>Destroy the marching aliens before they reach the ground.<br>Hit the red UFO for +100!', 'Start', start);
+</script></body></html>

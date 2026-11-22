@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Dots and Boxes</title><script>
+// Shared helpers for every arcade game
+const G = (() => {
+  const st = document.createElement('style');
+  st.textContent = `
+html,body{margin:0;height:100%;background:#0b0820;color:#fff;font-family:system-ui,-apple-system,sans-serif;overflow:hidden;
+  touch-action:none;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
+.hud{position:fixed;top:12px;left:0;right:0;display:flex;justify-content:space-between;padding:0 18px;font-weight:700;
+  letter-spacing:1px;z-index:5;pointer-events:none;color:#cfe8ff}
+.hud b{color:#fff;font-size:20px;text-shadow:0 0 10px #3df5ff}
+.ov{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  background:rgba(8,5,25,.85);z-index:10;text-align:center;padding:20px}
+.ov h1{margin:0 0 10px;font-size:clamp(30px,8vw,52px);background:linear-gradient(90deg,#3df5ff,#ff3df0);
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.ov p{opacity:.88;line-height:1.6;max-width:340px;margin:6px 0}
+.ov button{margin-top:18px;font:inherit;font-weight:800;font-size:18px;padding:13px 34px;border:0;border-radius:999px;
+  background:linear-gradient(90deg,#3df5ff,#ff3df0);color:#0b0820;cursor:pointer}
+`;
+  document.head.appendChild(st);
+
+  let ac;
+  function beep(f, d = .08, type = 'sine', v = .1) {
+    try {
+      ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.type = type; o.frequency.value = f;
+      g.gain.setValueAtTime(v, ac.currentTime);
+      g.gain.exponentialRampToValueAtTime(.001, ac.currentTime + d);
+      o.connect(g).connect(ac.destination); o.start(); o.stop(ac.currentTime + d);
+    } catch (e) {}
+  }
+  function getBest(k) { try { return +localStorage.getItem('arc_' + k) || 0 } catch (e) { return 0 } }
+  function setBest(k, v) { try { localStorage.setItem('arc_' + k, v) } catch (e) {} }
+  // Save if higher (or lower when lowerIsBetter). Returns current best.
+  function best(k, v, lowerIsBetter) {
+    const b = getBest(k);
+    if (v != null && (!b || (lowerIsBetter ? v < b : v > b))) { setBest(k, v); return v }
+    return b;
+  }
+  function set(id, v) { const e = document.getElementById(id); if (e) e.textContent = v }
+
+  function overlay(title, html, btn, cb) {
+    let o = document.querySelector('.ov');
+    if (!o) { o = document.createElement('div'); o.className = 'ov'; document.body.appendChild(o) }
+    o.innerHTML = `<h1>${title}</h1><p>${html}</p><button>${btn}</button>`;
+    o.style.display = 'flex';
+    o.addEventListener('pointerdown', e => e.stopPropagation());
+    o.querySelector('button').onclick = e => { e.stopPropagation(); o.style.display = 'none'; beep(440, .08, 'triangle'); cb() };
+  }
+
+  // Swipe (touch/mouse) + arrow keys / WASD → 'L','R','U','D'
+  function swipe(cb) {
+    let sx = null, sy = null;
+    addEventListener('pointerdown', e => { sx = e.clientX; sy = e.clientY });
+    addEventListener('pointerup', e => {
+      if (sx == null) return;
+      const dx = e.clientX - sx, dy = e.clientY - sy; sx = null;
+      if (Math.max(Math.abs(dx), Math.abs(dy)) < 20) return;
+      cb(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'R' : 'L') : (dy > 0 ? 'D' : 'U'));
+    });
+    addEventListener('keydown', e => {
+      const m = { ArrowLeft: 'L', ArrowRight: 'R', ArrowUp: 'U', ArrowDown: 'D', a: 'L', d: 'R', w: 'U', s: 'D' }[e.key];
+      if (m) { e.preventDefault(); cb(m) }
+    });
+  }
+
+  // Full-screen crisp canvas. Returns {c, x, W, H}; set .onresize to react.
+  function canvas() {
+    const c = document.createElement('canvas');
+    c.style.cssText = 'display:block;width:100vw;height:100vh';
+    document.body.prepend(c);
+    const o = { c, x: c.getContext('2d'), W: 0, H: 0 };
+    function r() {
+      const d = Math.min(devicePixelRatio || 1, 2);
+      o.W = innerWidth; o.H = innerHeight; c.width = o.W * d; c.height = o.H * d;
+      o.x.setTransform(d, 0, 0, d, 0, 0); o.onresize && o.onresize();
+    }
+    addEventListener('resize', r); r();
+    return o;
+  }
+
+  // Game loop with delta time (seconds, capped)
+  function loop(fn) {
+    let last = performance.now();
+    function f(t) { const dt = Math.min(.05, (t - last) / 1000); last = t; fn(dt); requestAnimationFrame(f) }
+    requestAnimationFrame(f);
+  }
+
+  return { beep, getBest, setBest, best, set, overlay, swipe, canvas, loop };
+})();
+
+</script>
+<style>#msg{position:fixed;left:0;right:0;bottom:70px;text-align:center;font-weight:700;color:#cfe8ff}</style></head><body>
+<div class="hud"><span>You <b id="p">0</b></span><span>Wins <b id="b">0</b></span><span>CPU <b id="c">0</b></span></div>
+<div id="msg"></div>
+<script>
+const K = G.canvas(), x = K.x, D = 5, B = D - 1;
+let H, V, box, turn, busy, sp, ox, oy, last = null;
+G.set('b', G.getBest('dots'));
+K.onresize = () => { sp = Math.min(K.W - 60, K.H - 200) / B; ox = (K.W - sp * B) / 2; oy = (K.H - sp * B) / 2 };
+K.onresize();
+// H[r][c]: r 0..D-1, c 0..B-1 ; V[r][c]: r 0..B-1, c 0..D-1 ; values 0 / 1 (you) / 2 (cpu)
+function newGame() { H = [...Array(D)].map(() => Array(B).fill(0)); V = [...Array(B)].map(() => Array(D).fill(0)); box = [...Array(B)].map(() => Array(B).fill(0)); turn = 1; busy = false; last = null; G.set('p', 0); G.set('c', 0); G.set('msg', 'Your turn — tap between two dots') }
+const sides = (r, c) => (H[r][c] ? 1 : 0) + (H[r + 1][c] ? 1 : 0) + (V[r][c] ? 1 : 0) + (V[r][c + 1] ? 1 : 0);
+function edges() { const e = []; for (let r = 0; r < D; r++) for (let c = 0; c < B; c++) if (!H[r][c]) e.push(['H', r, c]); for (let r = 0; r < B; r++) for (let c = 0; c < D; c++) if (!V[r][c]) e.push(['V', r, c]); return e }
+function adjBoxes(t, r, c) { const o = []; if (t == 'H') { if (r > 0) o.push([r - 1, c]); if (r < B) o.push([r, c]) } else { if (c > 0) o.push([r, c - 1]); if (c < B) o.push([r, c]) } return o }
+function take(t, r, c, who) {
+  (t == 'H' ? H : V)[r][c] = who; last = [t, r, c]; let made = 0;
+  for (const [br, bc] of adjBoxes(t, r, c)) if (sides(br, bc) === 4 && !box[br][bc]) { box[br][bc] = who; made++ }
+  G.beep(made ? 900 : (who == 1 ? 500 : 330), made ? .12 : .05, 'triangle');
+  let p = 0, q = 0; box.flat().forEach(v => { if (v == 1) p++; if (v == 2) q++ }); G.set('p', p); G.set('c', q);
+  if (p + q === B * B) {
+    busy = true; if (p > q) { const w = G.getBest('dots') + 1; G.setBest('dots', w); G.set('b', w) }
+    setTimeout(() => G.overlay(p > q ? 'You win! 🎉' : q > p ? 'CPU wins' : 'Draw', 'You ' + p + ' – ' + q + ' CPU', 'Play again', newGame), 600); return 'end';
+  }
+  return made;
+}
+function cpu() {
+  const es = edges(); let pick = null;
+  const after = e => adjBoxes(e[0], e[1], e[2]).map(([r, c]) => sides(r, c));
+  pick = es.find(e => after(e).some(s => s === 3));
+  if (!pick) { const safe = es.filter(e => after(e).every(s => s < 2)); if (safe.length) pick = safe[Math.random() * safe.length | 0] }
+  if (!pick) { // give away the fewest boxes: pick edge whose box has fewest sides
+    pick = es.sort((a, b) => Math.max(...after(a)) - Math.max(...after(b)))[0];
+  }
+  const res = take(pick[0], pick[1], pick[2], 2);
+  if (res === 'end') return;
+  if (res > 0) setTimeout(cpu, 450); else { turn = 1; busy = false; G.set('msg', 'Your turn') }
+}
+addEventListener('pointerdown', e => {
+  if (busy || turn !== 1) return;
+  const px = e.clientX, py = e.clientY; let best = null, bd = sp * .35;
+  for (const [t, r, c] of edges()) {
+    const mx = t == 'H' ? ox + (c + .5) * sp : ox + c * sp, my = t == 'H' ? oy + r * sp : oy + (r + .5) * sp, d = Math.hypot(px - mx, py - my);
+    if (d < bd) { bd = d; best = [t, r, c] }
+  }
+  if (!best) return;
+  const res = take(best[0], best[1], best[2], 1);
+  if (res === 'end') return;
+  if (!res) { turn = 2; busy = true; G.set('msg', 'CPU is playing…'); setTimeout(cpu, 450) } else G.set('msg', 'Box! Go again');
+});
+G.loop(() => {
+  x.fillStyle = '#0b0820'; x.fillRect(0, 0, K.W, K.H); if (!H) return;
+  for (let r = 0; r < B; r++) for (let c = 0; c < B; c++) if (box[r][c]) { x.fillStyle = box[r][c] == 1 ? 'rgba(61,245,255,.35)' : 'rgba(255,61,240,.35)'; x.fillRect(ox + c * sp + 3, oy + r * sp + 3, sp - 6, sp - 6); x.fillStyle = '#fff'; x.font = `800 ${sp * .35}px system-ui`; x.textAlign = 'center'; x.textBaseline = 'middle'; x.fillText(box[r][c] == 1 ? 'YOU' : 'CPU', ox + (c + .5) * sp, oy + (r + .5) * sp) }
+  x.lineCap = 'round'; x.lineWidth = 6;
+  const line = (x1, y1, x2, y2, v, isLast) => { x.strokeStyle = v ? (v == 1 ? '#3df5ff' : '#ff3df0') : 'rgba(255,255,255,.07)'; x.shadowColor = x.strokeStyle; x.shadowBlur = isLast ? 18 : v ? 8 : 0; x.beginPath(); x.moveTo(x1, y1); x.lineTo(x2, y2); x.stroke() };
+  const isL = (t, r, c) => last && last[0] == t && last[1] == r && last[2] == c;
+  for (let r = 0; r < D; r++) for (let c = 0; c < B; c++) line(ox + c * sp, oy + r * sp, ox + (c + 1) * sp, oy + r * sp, H[r][c], isL('H', r, c));
+  for (let r = 0; r < B; r++) for (let c = 0; c < D; c++) line(ox + c * sp, oy + r * sp, ox + c * sp, oy + (r + 1) * sp, V[r][c], isL('V', r, c));
+  x.shadowBlur = 0; x.fillStyle = '#fff'; for (let r = 0; r < D; r++) for (let c = 0; c < D; c++) { x.beginPath(); x.arc(ox + c * sp, oy + r * sp, 6, 0, 7); x.fill() }
+});
+newGame();
+G.overlay('Dots and Boxes', 'Take turns drawing a line between two dots.<br>Close the 4th side of a box to claim it — and go again!<br>Most boxes wins. Careful not to give the CPU the 3rd side.', 'Start', () => {});
+</script></body></html>

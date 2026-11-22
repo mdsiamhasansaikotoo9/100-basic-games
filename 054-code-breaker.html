@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Code Breaker</title><script>
+// Shared helpers for every arcade game
+const G = (() => {
+  const st = document.createElement('style');
+  st.textContent = `
+html,body{margin:0;height:100%;background:#0b0820;color:#fff;font-family:system-ui,-apple-system,sans-serif;overflow:hidden;
+  touch-action:none;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
+.hud{position:fixed;top:12px;left:0;right:0;display:flex;justify-content:space-between;padding:0 18px;font-weight:700;
+  letter-spacing:1px;z-index:5;pointer-events:none;color:#cfe8ff}
+.hud b{color:#fff;font-size:20px;text-shadow:0 0 10px #3df5ff}
+.ov{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  background:rgba(8,5,25,.85);z-index:10;text-align:center;padding:20px}
+.ov h1{margin:0 0 10px;font-size:clamp(30px,8vw,52px);background:linear-gradient(90deg,#3df5ff,#ff3df0);
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.ov p{opacity:.88;line-height:1.6;max-width:340px;margin:6px 0}
+.ov button{margin-top:18px;font:inherit;font-weight:800;font-size:18px;padding:13px 34px;border:0;border-radius:999px;
+  background:linear-gradient(90deg,#3df5ff,#ff3df0);color:#0b0820;cursor:pointer}
+`;
+  document.head.appendChild(st);
+
+  let ac;
+  function beep(f, d = .08, type = 'sine', v = .1) {
+    try {
+      ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.type = type; o.frequency.value = f;
+      g.gain.setValueAtTime(v, ac.currentTime);
+      g.gain.exponentialRampToValueAtTime(.001, ac.currentTime + d);
+      o.connect(g).connect(ac.destination); o.start(); o.stop(ac.currentTime + d);
+    } catch (e) {}
+  }
+  function getBest(k) { try { return +localStorage.getItem('arc_' + k) || 0 } catch (e) { return 0 } }
+  function setBest(k, v) { try { localStorage.setItem('arc_' + k, v) } catch (e) {} }
+  // Save if higher (or lower when lowerIsBetter). Returns current best.
+  function best(k, v, lowerIsBetter) {
+    const b = getBest(k);
+    if (v != null && (!b || (lowerIsBetter ? v < b : v > b))) { setBest(k, v); return v }
+    return b;
+  }
+  function set(id, v) { const e = document.getElementById(id); if (e) e.textContent = v }
+
+  function overlay(title, html, btn, cb) {
+    let o = document.querySelector('.ov');
+    if (!o) { o = document.createElement('div'); o.className = 'ov'; document.body.appendChild(o) }
+    o.innerHTML = `<h1>${title}</h1><p>${html}</p><button>${btn}</button>`;
+    o.style.display = 'flex';
+    o.addEventListener('pointerdown', e => e.stopPropagation());
+    o.querySelector('button').onclick = e => { e.stopPropagation(); o.style.display = 'none'; beep(440, .08, 'triangle'); cb() };
+  }
+
+  // Swipe (touch/mouse) + arrow keys / WASD → 'L','R','U','D'
+  function swipe(cb) {
+    let sx = null, sy = null;
+    addEventListener('pointerdown', e => { sx = e.clientX; sy = e.clientY });
+    addEventListener('pointerup', e => {
+      if (sx == null) return;
+      const dx = e.clientX - sx, dy = e.clientY - sy; sx = null;
+      if (Math.max(Math.abs(dx), Math.abs(dy)) < 20) return;
+      cb(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'R' : 'L') : (dy > 0 ? 'D' : 'U'));
+    });
+    addEventListener('keydown', e => {
+      const m = { ArrowLeft: 'L', ArrowRight: 'R', ArrowUp: 'U', ArrowDown: 'D', a: 'L', d: 'R', w: 'U', s: 'D' }[e.key];
+      if (m) { e.preventDefault(); cb(m) }
+    });
+  }
+
+  // Full-screen crisp canvas. Returns {c, x, W, H}; set .onresize to react.
+  function canvas() {
+    const c = document.createElement('canvas');
+    c.style.cssText = 'display:block;width:100vw;height:100vh';
+    document.body.prepend(c);
+    const o = { c, x: c.getContext('2d'), W: 0, H: 0 };
+    function r() {
+      const d = Math.min(devicePixelRatio || 1, 2);
+      o.W = innerWidth; o.H = innerHeight; c.width = o.W * d; c.height = o.H * d;
+      o.x.setTransform(d, 0, 0, d, 0, 0); o.onresize && o.onresize();
+    }
+    addEventListener('resize', r); r();
+    return o;
+  }
+
+  // Game loop with delta time (seconds, capped)
+  function loop(fn) {
+    let last = performance.now();
+    function f(t) { const dt = Math.min(.05, (t - last) / 1000); last = t; fn(dt); requestAnimationFrame(f) }
+    requestAnimationFrame(f);
+  }
+
+  return { beep, getBest, setBest, best, set, overlay, swipe, canvas, loop };
+})();
+
+</script>
+<style>
+#rows{position:fixed;top:48px;left:50%;transform:translateX(-50%);display:flex;flex-direction:column;gap:5px;width:min(92vw,360px)}
+.row{display:flex;align-items:center;gap:8px;padding:4px 8px;border-radius:10px;background:rgba(255,255,255,.04)}
+.row.cur{background:rgba(61,245,255,.12);outline:1px solid rgba(61,245,255,.4)}
+.peg{width:clamp(24px,7vw,32px);aspect-ratio:1;border-radius:50%;background:#1d1550;border:2px solid rgba(255,255,255,.12)}
+.fb{display:grid;grid-template-columns:1fr 1fr;gap:3px;margin-left:auto}
+.fb i{width:10px;height:10px;border-radius:50%;background:#2a2050}.fb i.k{background:#4dff88}.fb i.w{background:#fff}
+#pad{position:fixed;bottom:58px;left:50%;transform:translateX(-50%);display:flex;flex-direction:column;gap:8px;align-items:center}
+#cols{display:flex;gap:8px}
+#cols button{width:42px;height:42px;border-radius:50%;border:3px solid rgba(255,255,255,.3)}
+#act{display:flex;gap:10px}
+#act button{font:inherit;font-weight:800;font-size:15px;padding:9px 18px;border:0;border-radius:999px;background:#2f2080;color:#fff}
+#act #go{background:#4dff88;color:#0b0820}
+</style></head><body>
+<div class="hud"><span>Solved <b id="s">0</b></span><span>Best <b id="b">–</b></span></div>
+<div id="rows"></div>
+<div id="pad"><div id="cols"></div><div id="act"><button id="del">⌫ Undo</button><button id="go">✓ Check</button></div></div>
+<script>
+const CL = ['#ff4d6d', '#ffe35a', '#4dff88', '#3df5ff', '#b44dff', '#ff8a3d'], TRIES = 9;
+let code, row, guess, solved = 0, run = false;
+const showBest = () => { const b = G.best('codebreaker', null, true); G.set('b', b ? b + ' tries' : '–') }; showBest();
+CL.forEach((c, i) => { const b = document.createElement('button'); b.style.background = c; b.onclick = () => add(i); document.getElementById('cols').appendChild(b) });
+document.getElementById('del').onclick = () => { if (run && guess.length) { guess.pop(); render() } };
+document.getElementById('go').onclick = check;
+function start() {
+  code = [...Array(4)].map(() => Math.random() * 6 | 0); row = 0; guess = []; run = true;
+  const rows = document.getElementById('rows'); rows.innerHTML = '';
+  for (let i = 0; i < TRIES; i++) rows.innerHTML += `<div class="row" id="r${i}"><span class="peg"></span><span class="peg"></span><span class="peg"></span><span class="peg"></span><div class="fb"><i></i><i></i><i></i><i></i></div></div>`;
+  render();
+}
+function render() {
+  for (let i = 0; i < TRIES; i++) document.getElementById('r' + i).classList.toggle('cur', i === row && run);
+  const pegs = document.querySelectorAll(`#r${row} .peg`); pegs.forEach((p, k) => p.style.background = guess[k] != null ? CL[guess[k]] : '');
+}
+function add(i) { if (!run || guess.length >= 4) return; guess.push(i); G.beep(400 + i * 60, .05, 'triangle'); render() }
+function check() {
+  if (!run || guess.length < 4) return;
+  let black = 0, white = 0; const a = [], b = [];
+  guess.forEach((v, i) => { if (v === code[i]) black++; else { a.push(v); b.push(code[i]) } });
+  a.forEach(v => { const j = b.indexOf(v); if (j >= 0) { white++; b.splice(j, 1) } });
+  const fb = document.querySelectorAll(`#r${row} .fb i`); for (let k = 0; k < 4; k++) fb[k].className = k < black ? 'k' : k < black + white ? 'w' : '';
+  if (black === 4) {
+    run = false; solved++; G.set('s', solved); G.best('codebreaker', row + 1, true); showBest(); G.beep(900, .3, 'triangle'); render();
+    return setTimeout(() => G.overlay('Cracked it! 🔓', 'You found the code in ' + (row + 1) + ' tries.', 'New code', start), 500);
+  }
+  G.beep(300, .08, 'square', .05); row++; guess = [];
+  if (row >= TRIES) {
+    run = false; render(); G.beep(130, .4, 'sawtooth');
+    const show = code.map(c => `<span style="display:inline-block;width:22px;height:22px;border-radius:50%;background:${CL[c]};margin:0 3px;vertical-align:middle"></span>`).join('');
+    return setTimeout(() => G.overlay('Out of tries', 'The code was:<br><br>' + show, 'Try again', start), 400);
+  }
+  render();
+}
+start();
+G.overlay('Code Breaker', 'Guess the secret code of 4 colors (colors can repeat).<br>🟢 green dot = right color, right spot.<br>⚪ white dot = right color, wrong spot.<br>You have 9 tries.', 'Start', () => {});
+</script></body></html>

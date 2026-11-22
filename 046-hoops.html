@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Hoops</title><script>
+// Shared helpers for every arcade game
+const G = (() => {
+  const st = document.createElement('style');
+  st.textContent = `
+html,body{margin:0;height:100%;background:#0b0820;color:#fff;font-family:system-ui,-apple-system,sans-serif;overflow:hidden;
+  touch-action:none;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
+.hud{position:fixed;top:12px;left:0;right:0;display:flex;justify-content:space-between;padding:0 18px;font-weight:700;
+  letter-spacing:1px;z-index:5;pointer-events:none;color:#cfe8ff}
+.hud b{color:#fff;font-size:20px;text-shadow:0 0 10px #3df5ff}
+.ov{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  background:rgba(8,5,25,.85);z-index:10;text-align:center;padding:20px}
+.ov h1{margin:0 0 10px;font-size:clamp(30px,8vw,52px);background:linear-gradient(90deg,#3df5ff,#ff3df0);
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.ov p{opacity:.88;line-height:1.6;max-width:340px;margin:6px 0}
+.ov button{margin-top:18px;font:inherit;font-weight:800;font-size:18px;padding:13px 34px;border:0;border-radius:999px;
+  background:linear-gradient(90deg,#3df5ff,#ff3df0);color:#0b0820;cursor:pointer}
+`;
+  document.head.appendChild(st);
+
+  let ac;
+  function beep(f, d = .08, type = 'sine', v = .1) {
+    try {
+      ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.type = type; o.frequency.value = f;
+      g.gain.setValueAtTime(v, ac.currentTime);
+      g.gain.exponentialRampToValueAtTime(.001, ac.currentTime + d);
+      o.connect(g).connect(ac.destination); o.start(); o.stop(ac.currentTime + d);
+    } catch (e) {}
+  }
+  function getBest(k) { try { return +localStorage.getItem('arc_' + k) || 0 } catch (e) { return 0 } }
+  function setBest(k, v) { try { localStorage.setItem('arc_' + k, v) } catch (e) {} }
+  // Save if higher (or lower when lowerIsBetter). Returns current best.
+  function best(k, v, lowerIsBetter) {
+    const b = getBest(k);
+    if (v != null && (!b || (lowerIsBetter ? v < b : v > b))) { setBest(k, v); return v }
+    return b;
+  }
+  function set(id, v) { const e = document.getElementById(id); if (e) e.textContent = v }
+
+  function overlay(title, html, btn, cb) {
+    let o = document.querySelector('.ov');
+    if (!o) { o = document.createElement('div'); o.className = 'ov'; document.body.appendChild(o) }
+    o.innerHTML = `<h1>${title}</h1><p>${html}</p><button>${btn}</button>`;
+    o.style.display = 'flex';
+    o.addEventListener('pointerdown', e => e.stopPropagation());
+    o.querySelector('button').onclick = e => { e.stopPropagation(); o.style.display = 'none'; beep(440, .08, 'triangle'); cb() };
+  }
+
+  // Swipe (touch/mouse) + arrow keys / WASD → 'L','R','U','D'
+  function swipe(cb) {
+    let sx = null, sy = null;
+    addEventListener('pointerdown', e => { sx = e.clientX; sy = e.clientY });
+    addEventListener('pointerup', e => {
+      if (sx == null) return;
+      const dx = e.clientX - sx, dy = e.clientY - sy; sx = null;
+      if (Math.max(Math.abs(dx), Math.abs(dy)) < 20) return;
+      cb(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'R' : 'L') : (dy > 0 ? 'D' : 'U'));
+    });
+    addEventListener('keydown', e => {
+      const m = { ArrowLeft: 'L', ArrowRight: 'R', ArrowUp: 'U', ArrowDown: 'D', a: 'L', d: 'R', w: 'U', s: 'D' }[e.key];
+      if (m) { e.preventDefault(); cb(m) }
+    });
+  }
+
+  // Full-screen crisp canvas. Returns {c, x, W, H}; set .onresize to react.
+  function canvas() {
+    const c = document.createElement('canvas');
+    c.style.cssText = 'display:block;width:100vw;height:100vh';
+    document.body.prepend(c);
+    const o = { c, x: c.getContext('2d'), W: 0, H: 0 };
+    function r() {
+      const d = Math.min(devicePixelRatio || 1, 2);
+      o.W = innerWidth; o.H = innerHeight; c.width = o.W * d; c.height = o.H * d;
+      o.x.setTransform(d, 0, 0, d, 0, 0); o.onresize && o.onresize();
+    }
+    addEventListener('resize', r); r();
+    return o;
+  }
+
+  // Game loop with delta time (seconds, capped)
+  function loop(fn) {
+    let last = performance.now();
+    function f(t) { const dt = Math.min(.05, (t - last) / 1000); last = t; fn(dt); requestAnimationFrame(f) }
+    requestAnimationFrame(f);
+  }
+
+  return { beep, getBest, setBest, best, set, overlay, swipe, canvas, loop };
+})();
+
+</script></head><body>
+<div class="hud"><span>Score <b id="s">0</b></span><span id="l">🏀🏀🏀</span><span>Best <b id="b">0</b></span></div>
+<script>
+const K = G.canvas(), x = K.x, BR = 20;
+let ball = null, hoop, score = 0, lives = 3, run = false, sx, sy, st, scored = false, t = 0, msg = null, streak = 0;
+G.set('b', G.best('hoops'));
+const RW = () => 84, GR = () => K.H * 1.8;
+function resetBall() { ball = { x: K.W / 2, y: K.H - 110, vx: 0, vy: 0, fly: false, prevY: 0, z: 1 }; scored = false }
+function start() { score = 0; lives = 3; streak = 0; run = true; hoop = { x: K.W / 2, y: K.H * .3, vx: 0 }; G.set('s', 0); G.set('l', '🏀🏀🏀'); resetBall() }
+addEventListener('pointerdown', e => { if (run && ball && !ball.fly) { sx = e.clientX; sy = e.clientY; st = performance.now() } });
+addEventListener('pointerup', e => {
+  if (sx == null) return; const dx = e.clientX - sx, dy = e.clientY - sy, dtm = Math.max(60, performance.now() - st) / 1000; sx = null;
+  if (dy > -30) return;
+  const need = Math.sqrt(2 * GR() * (ball.y - hoop.y + 60)); // velocity to reach just above hoop
+  const power = Math.min(1.35, Math.max(.7, (-dy / dtm) / 1400));
+  ball.vy = -need * power; ball.vx = dx / dtm * .35; ball.fly = true; G.beep(300, .06, 'triangle');
+});
+function rim(px, py) {
+  const dx = ball.x - px, dy = ball.y - py, d = Math.hypot(dx, dy);
+  if (d < BR + 4 && d > 0) { const nx = dx / d, ny = dy / d, dot = ball.vx * nx + ball.vy * ny; ball.x = px + nx * (BR + 4); ball.y = py + ny * (BR + 4); if (dot < 0) { ball.vx -= 1.6 * dot * nx; ball.vy -= 1.6 * dot * ny } G.beep(200, .03, 'square', .05) }
+}
+G.loop(dt => {
+  t += dt; if (msg) { msg.life -= dt; if (msg.life <= 0) msg = null }
+  if (run && hoop) {
+    const moveSp = score >= 5 ? Math.min(40 + score * 8, 160) : 0;
+    hoop.x = K.W / 2 + Math.sin(t * moveSp / 100) * (moveSp ? K.W * .28 : 0);
+  }
+  if (run && ball && ball.fly) {
+    for (let k = 0; k < 3; k++) {
+      const s = dt / 3; ball.prevY = ball.y; ball.vy += GR() * s; ball.x += ball.vx * s; ball.y += ball.vy * s;
+      if (ball.vy > 0) { rim(hoop.x - RW() / 2, hoop.y); rim(hoop.x + RW() / 2, hoop.y) }
+      if (!scored && ball.vy > 0 && ball.prevY < hoop.y && ball.y >= hoop.y && Math.abs(ball.x - hoop.x) < RW() / 2 - 4) {
+        scored = true; streak++; const pts = streak >= 3 ? 2 : 1; score += pts; G.set('s', score); msg = { t: streak >= 3 ? 'ON FIRE! +2' : 'SWISH! +1', life: 1 }; G.beep(900, .15, 'triangle'); setTimeout(() => G.beep(1200, .15, 'triangle'), 100);
+      }
+    }
+    if (ball.x < BR) { ball.x = BR; ball.vx = Math.abs(ball.vx) * .7 } if (ball.x > K.W - BR) { ball.x = K.W - BR; ball.vx = -Math.abs(ball.vx) * .7 }
+    if (ball.y > K.H + 40) {
+      if (!scored) {
+        streak = 0; lives--; G.set('l', '🏀'.repeat(Math.max(0, lives)) + '⚫'.repeat(3 - Math.max(0, lives))); msg = { t: 'Miss', life: .8 }; G.beep(150, .25, 'sawtooth');
+        if (lives <= 0) { run = false; G.set('b', G.best('hoops', score)); G.overlay('Game Over', 'Score: ' + score, 'Play again', start) }
+      }
+      if (run) resetBall();
+    }
+  }
+  // draw
+  const bg = x.createLinearGradient(0, 0, 0, K.H); bg.addColorStop(0, '#1a0f45'); bg.addColorStop(1, '#3a1608'); x.fillStyle = bg; x.fillRect(0, 0, K.W, K.H);
+  x.fillStyle = '#5a3416'; x.fillRect(0, K.H - 70, K.W, 70); x.strokeStyle = 'rgba(255,255,255,.2)'; x.lineWidth = 2; x.beginPath(); x.arc(K.W / 2, K.H - 70, 80, Math.PI, 0); x.stroke();
+  if (!hoop) return;
+  const hx = hoop.x, hy = hoop.y, rw = RW();
+  x.fillStyle = 'rgba(255,255,255,.9)'; x.fillRect(hx - 60, hy - 90, 120, 80); x.strokeStyle = '#ff4d6d'; x.lineWidth = 3; x.strokeRect(hx - 22, hy - 50, 44, 34);
+  const behind = ball && ball.fly && ball.vy > 0 && ball.y < hy;
+  const drawBall = () => { if (!ball) return; x.save(); x.translate(ball.x, ball.y); x.rotate(ball.x / 30); x.fillStyle = '#ff8a3d'; x.beginPath(); x.arc(0, 0, BR, 0, 7); x.fill(); x.strokeStyle = '#3a1608'; x.lineWidth = 2; x.beginPath(); x.moveTo(-BR, 0); x.lineTo(BR, 0); x.moveTo(0, -BR); x.lineTo(0, BR); x.stroke(); x.beginPath(); x.arc(0, 0, BR * .6, -1, 1); x.stroke(); x.restore() };
+  if (behind) drawBall();
+  x.strokeStyle = 'rgba(255,255,255,.6)'; x.lineWidth = 1.5; for (let i = 0; i <= 6; i++) { x.beginPath(); x.moveTo(hx - rw / 2 + i * rw / 6, hy); x.lineTo(hx - rw / 3 + i * rw / 9, hy + 40); x.stroke() }
+  x.strokeStyle = '#ff4d6d'; x.lineWidth = 5; x.shadowColor = '#ff4d6d'; x.shadowBlur = 10; x.beginPath(); x.moveTo(hx - rw / 2, hy); x.lineTo(hx + rw / 2, hy); x.stroke(); x.shadowBlur = 0;
+  if (!behind) drawBall();
+  if (ball && !ball.fly && run) { x.fillStyle = 'rgba(255,255,255,.5)'; x.font = '700 15px system-ui'; x.textAlign = 'center'; x.fillText('↑ flick up to shoot', K.W / 2, K.H - 40) }
+  if (msg) { x.globalAlpha = Math.min(1, msg.life); x.fillStyle = '#ffe35a'; x.font = '900 30px system-ui'; x.textAlign = 'center'; x.fillText(msg.t, K.W / 2, K.H * .55); x.globalAlpha = 1 }
+});
+G.overlay('Hoops', 'Flick the ball upward to shoot.<br>Swipe a bit left or right to aim.<br>3 in a row = ON FIRE (+2). 3 misses and it\'s over.', 'Start', start);
+</script></body></html>

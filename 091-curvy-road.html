@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Curvy Road</title><script>
+// Shared helpers for every arcade game
+const G = (() => {
+  const st = document.createElement('style');
+  st.textContent = `
+html,body{margin:0;height:100%;background:#0b0820;color:#fff;font-family:system-ui,-apple-system,sans-serif;overflow:hidden;
+  touch-action:none;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
+.hud{position:fixed;top:12px;left:0;right:0;display:flex;justify-content:space-between;padding:0 18px;font-weight:700;
+  letter-spacing:1px;z-index:5;pointer-events:none;color:#cfe8ff}
+.hud b{color:#fff;font-size:20px;text-shadow:0 0 10px #3df5ff}
+.ov{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  background:rgba(8,5,25,.85);z-index:10;text-align:center;padding:20px}
+.ov h1{margin:0 0 10px;font-size:clamp(30px,8vw,52px);background:linear-gradient(90deg,#3df5ff,#ff3df0);
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.ov p{opacity:.88;line-height:1.6;max-width:340px;margin:6px 0}
+.ov button{margin-top:18px;font:inherit;font-weight:800;font-size:18px;padding:13px 34px;border:0;border-radius:999px;
+  background:linear-gradient(90deg,#3df5ff,#ff3df0);color:#0b0820;cursor:pointer}
+`;
+  document.head.appendChild(st);
+
+  let ac;
+  function beep(f, d = .08, type = 'sine', v = .1) {
+    try {
+      ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.type = type; o.frequency.value = f;
+      g.gain.setValueAtTime(v, ac.currentTime);
+      g.gain.exponentialRampToValueAtTime(.001, ac.currentTime + d);
+      o.connect(g).connect(ac.destination); o.start(); o.stop(ac.currentTime + d);
+    } catch (e) {}
+  }
+  function getBest(k) { try { return +localStorage.getItem('arc_' + k) || 0 } catch (e) { return 0 } }
+  function setBest(k, v) { try { localStorage.setItem('arc_' + k, v) } catch (e) {} }
+  // Save if higher (or lower when lowerIsBetter). Returns current best.
+  function best(k, v, lowerIsBetter) {
+    const b = getBest(k);
+    if (v != null && (!b || (lowerIsBetter ? v < b : v > b))) { setBest(k, v); return v }
+    return b;
+  }
+  function set(id, v) { const e = document.getElementById(id); if (e) e.textContent = v }
+
+  function overlay(title, html, btn, cb) {
+    let o = document.querySelector('.ov');
+    if (!o) { o = document.createElement('div'); o.className = 'ov'; document.body.appendChild(o) }
+    o.innerHTML = `<h1>${title}</h1><p>${html}</p><button>${btn}</button>`;
+    o.style.display = 'flex';
+    o.addEventListener('pointerdown', e => e.stopPropagation());
+    o.querySelector('button').onclick = e => { e.stopPropagation(); o.style.display = 'none'; beep(440, .08, 'triangle'); cb() };
+  }
+
+  // Swipe (touch/mouse) + arrow keys / WASD → 'L','R','U','D'
+  function swipe(cb) {
+    let sx = null, sy = null;
+    addEventListener('pointerdown', e => { sx = e.clientX; sy = e.clientY });
+    addEventListener('pointerup', e => {
+      if (sx == null) return;
+      const dx = e.clientX - sx, dy = e.clientY - sy; sx = null;
+      if (Math.max(Math.abs(dx), Math.abs(dy)) < 20) return;
+      cb(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'R' : 'L') : (dy > 0 ? 'D' : 'U'));
+    });
+    addEventListener('keydown', e => {
+      const m = { ArrowLeft: 'L', ArrowRight: 'R', ArrowUp: 'U', ArrowDown: 'D', a: 'L', d: 'R', w: 'U', s: 'D' }[e.key];
+      if (m) { e.preventDefault(); cb(m) }
+    });
+  }
+
+  // Full-screen crisp canvas. Returns {c, x, W, H}; set .onresize to react.
+  function canvas() {
+    const c = document.createElement('canvas');
+    c.style.cssText = 'display:block;width:100vw;height:100vh';
+    document.body.prepend(c);
+    const o = { c, x: c.getContext('2d'), W: 0, H: 0 };
+    function r() {
+      const d = Math.min(devicePixelRatio || 1, 2);
+      o.W = innerWidth; o.H = innerHeight; c.width = o.W * d; c.height = o.H * d;
+      o.x.setTransform(d, 0, 0, d, 0, 0); o.onresize && o.onresize();
+    }
+    addEventListener('resize', r); r();
+    return o;
+  }
+
+  // Game loop with delta time (seconds, capped)
+  function loop(fn) {
+    let last = performance.now();
+    function f(t) { const dt = Math.min(.05, (t - last) / 1000); last = t; fn(dt); requestAnimationFrame(f) }
+    requestAnimationFrame(f);
+  }
+
+  return { beep, getBest, setBest, best, set, overlay, swipe, canvas, loop };
+})();
+
+</script></head><body>
+<div class="hud"><span>Distance <b id="s">0</b></span><span>Best <b id="b">0</b></span></div>
+<script>
+const K = G.canvas(), x = K.x;
+let dist = 0, carX = 0, steer = 0, run = false, sp = 0, p1 = 0, p2 = 0, t = 0, crash = 0, held = {};
+G.set('b', G.best('curvyroad'));
+const CY = () => K.H * .78;
+const center = wy => K.W / 2 + Math.sin(wy * .0035 + p1) * K.W * .22 * Math.min(1, wy / 1500) + Math.sin(wy * .009 + p2) * K.W * .1 * Math.min(1, wy / 4000);
+const width = wy => Math.max(K.W * .2, K.W * .55 - wy * .006);
+function start() { dist = 0; sp = 280; p1 = Math.random() * 7; p2 = Math.random() * 7; carX = center(0); steer = 0; crash = 0; run = true; G.set('s', 0) }
+addEventListener('pointerdown', e => held[e.pointerId] = e.clientX < K.W / 2 ? -1 : 1);
+addEventListener('pointerup', e => delete held[e.pointerId]); addEventListener('pointercancel', e => delete held[e.pointerId]);
+addEventListener('keydown', e => { if (e.key === 'ArrowLeft') held.kl = -1; if (e.key === 'ArrowRight') held.kr = 1 });
+addEventListener('keyup', e => { if (e.key === 'ArrowLeft') delete held.kl; if (e.key === 'ArrowRight') delete held.kr });
+G.loop(dt => {
+  t += dt;
+  if (run) {
+    sp = Math.min(700, 280 + dist * .02); dist += sp * dt; G.set('s', Math.floor(dist / 20));
+    const want = Object.values(held).reduce((a, b) => a + b, 0); steer += (Math.sign(want) - steer) * Math.min(1, dt * 8); carX += steer * (260 + sp * .3) * dt;
+    const c = center(dist), w = width(dist);
+    if (Math.abs(carX - c) > w / 2 - 10) { run = false; crash = 1; G.beep(90, .6, 'sawtooth', .15); const s = Math.floor(dist / 20); G.set('b', G.best('curvyroad', s)); setTimeout(() => G.overlay('Off the road!', 'Distance: ' + s, 'Drive again', start), 700) }
+    else if (Math.abs(carX - c) > w / 2 - 26 && (t * 10 | 0) % 2) G.beep(160, .02, 'square', .02);
+  }
+  x.fillStyle = '#1f7a3e'; x.fillRect(0, 0, K.W, K.H);
+  for (let sy = 0; sy < K.H; sy += 4) {
+    const wy = dist + (CY() - sy), c = center(wy), w = width(wy);
+    x.fillStyle = (Math.floor(wy / 40) % 2) ? '#22874a' : '#1f7a3e'; x.fillRect(0, sy, K.W, 4);
+    x.fillStyle = (Math.floor(wy / 30) % 2) ? '#ff4d6d' : '#fff'; x.fillRect(c - w / 2 - 8, sy, w + 16, 4);
+    x.fillStyle = '#2a2a3a'; x.fillRect(c - w / 2, sy, w, 4);
+    if (Math.floor(wy / 50) % 2) { x.fillStyle = '#ffe35a'; x.fillRect(c - 2, sy, 4, 4) }
+  }
+  const cy = CY(); x.save(); x.translate(carX || K.W / 2, cy); x.rotate(steer * .25 + (crash ? Math.sin(t * 30) * .3 : 0));
+  x.fillStyle = '#3df5ff'; x.shadowColor = '#3df5ff'; x.shadowBlur = 14; x.beginPath(); x.roundRect ? x.roundRect(-14, -26, 28, 52, 8) : x.rect(-14, -26, 28, 52); x.fill(); x.shadowBlur = 0;
+  x.fillStyle = 'rgba(0,0,0,.5)'; x.fillRect(-10, -14, 20, 10); x.fillRect(-10, 8, 20, 8); x.fillStyle = '#111'; x.fillRect(-17, -20, 4, 12); x.fillRect(13, -20, 4, 12); x.fillRect(-17, 10, 4, 12); x.fillRect(13, 10, 4, 12);
+  x.restore();
+  if (run) { x.fillStyle = 'rgba(255,255,255,.6)'; x.font = '700 13px system-ui'; x.textAlign = 'center'; x.fillText('◀ hold', K.W * .2, K.H - 60); x.fillText('hold ▶', K.W * .8, K.H - 60) }
+});
+G.overlay('Curvy Road', 'Hold the left or right side of the screen to steer.<br>Stay on the road as it twists and gets narrower.<br>It speeds up the farther you go!', 'Start', start);
+</script></body></html>

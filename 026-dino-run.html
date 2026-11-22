@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Dino Run</title><script>
+// Shared helpers for every arcade game
+const G = (() => {
+  const st = document.createElement('style');
+  st.textContent = `
+html,body{margin:0;height:100%;background:#0b0820;color:#fff;font-family:system-ui,-apple-system,sans-serif;overflow:hidden;
+  touch-action:none;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
+.hud{position:fixed;top:12px;left:0;right:0;display:flex;justify-content:space-between;padding:0 18px;font-weight:700;
+  letter-spacing:1px;z-index:5;pointer-events:none;color:#cfe8ff}
+.hud b{color:#fff;font-size:20px;text-shadow:0 0 10px #3df5ff}
+.ov{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  background:rgba(8,5,25,.85);z-index:10;text-align:center;padding:20px}
+.ov h1{margin:0 0 10px;font-size:clamp(30px,8vw,52px);background:linear-gradient(90deg,#3df5ff,#ff3df0);
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.ov p{opacity:.88;line-height:1.6;max-width:340px;margin:6px 0}
+.ov button{margin-top:18px;font:inherit;font-weight:800;font-size:18px;padding:13px 34px;border:0;border-radius:999px;
+  background:linear-gradient(90deg,#3df5ff,#ff3df0);color:#0b0820;cursor:pointer}
+`;
+  document.head.appendChild(st);
+
+  let ac;
+  function beep(f, d = .08, type = 'sine', v = .1) {
+    try {
+      ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.type = type; o.frequency.value = f;
+      g.gain.setValueAtTime(v, ac.currentTime);
+      g.gain.exponentialRampToValueAtTime(.001, ac.currentTime + d);
+      o.connect(g).connect(ac.destination); o.start(); o.stop(ac.currentTime + d);
+    } catch (e) {}
+  }
+  function getBest(k) { try { return +localStorage.getItem('arc_' + k) || 0 } catch (e) { return 0 } }
+  function setBest(k, v) { try { localStorage.setItem('arc_' + k, v) } catch (e) {} }
+  // Save if higher (or lower when lowerIsBetter). Returns current best.
+  function best(k, v, lowerIsBetter) {
+    const b = getBest(k);
+    if (v != null && (!b || (lowerIsBetter ? v < b : v > b))) { setBest(k, v); return v }
+    return b;
+  }
+  function set(id, v) { const e = document.getElementById(id); if (e) e.textContent = v }
+
+  function overlay(title, html, btn, cb) {
+    let o = document.querySelector('.ov');
+    if (!o) { o = document.createElement('div'); o.className = 'ov'; document.body.appendChild(o) }
+    o.innerHTML = `<h1>${title}</h1><p>${html}</p><button>${btn}</button>`;
+    o.style.display = 'flex';
+    o.addEventListener('pointerdown', e => e.stopPropagation());
+    o.querySelector('button').onclick = e => { e.stopPropagation(); o.style.display = 'none'; beep(440, .08, 'triangle'); cb() };
+  }
+
+  // Swipe (touch/mouse) + arrow keys / WASD → 'L','R','U','D'
+  function swipe(cb) {
+    let sx = null, sy = null;
+    addEventListener('pointerdown', e => { sx = e.clientX; sy = e.clientY });
+    addEventListener('pointerup', e => {
+      if (sx == null) return;
+      const dx = e.clientX - sx, dy = e.clientY - sy; sx = null;
+      if (Math.max(Math.abs(dx), Math.abs(dy)) < 20) return;
+      cb(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'R' : 'L') : (dy > 0 ? 'D' : 'U'));
+    });
+    addEventListener('keydown', e => {
+      const m = { ArrowLeft: 'L', ArrowRight: 'R', ArrowUp: 'U', ArrowDown: 'D', a: 'L', d: 'R', w: 'U', s: 'D' }[e.key];
+      if (m) { e.preventDefault(); cb(m) }
+    });
+  }
+
+  // Full-screen crisp canvas. Returns {c, x, W, H}; set .onresize to react.
+  function canvas() {
+    const c = document.createElement('canvas');
+    c.style.cssText = 'display:block;width:100vw;height:100vh';
+    document.body.prepend(c);
+    const o = { c, x: c.getContext('2d'), W: 0, H: 0 };
+    function r() {
+      const d = Math.min(devicePixelRatio || 1, 2);
+      o.W = innerWidth; o.H = innerHeight; c.width = o.W * d; c.height = o.H * d;
+      o.x.setTransform(d, 0, 0, d, 0, 0); o.onresize && o.onresize();
+    }
+    addEventListener('resize', r); r();
+    return o;
+  }
+
+  // Game loop with delta time (seconds, capped)
+  function loop(fn) {
+    let last = performance.now();
+    function f(t) { const dt = Math.min(.05, (t - last) / 1000); last = t; fn(dt); requestAnimationFrame(f) }
+    requestAnimationFrame(f);
+  }
+
+  return { beep, getBest, setBest, best, set, overlay, swipe, canvas, loop };
+})();
+
+</script></head><body>
+<div class="hud"><span>Score <b id="s">0</b></span><span>Best <b id="b">0</b></span></div>
+<script>
+const K = G.canvas(), x = K.x;
+let d = null, obs = [], run = false, t = 0, dist = 0, spawn = 0, clouds = [];
+G.set('b', G.best('dino'));
+const GY = () => K.H * .68, DX = () => Math.min(80, K.W * .18);
+function start() { d = { y: 0, vy: 0 }; obs = []; t = 0; dist = 0; spawn = 1; run = true; G.set('s', 0) }
+function jump() { if (run && d.y >= 0) { d.vy = -K.H * 1.15; G.beep(600, .06, 'triangle', .06) } }
+addEventListener('pointerdown', jump);
+addEventListener('keydown', e => { if (e.code == 'Space' || e.key == 'ArrowUp') { e.preventDefault(); jump() } });
+for (let i = 0; i < 5; i++) clouds.push({ x: Math.random(), y: .1 + Math.random() * .35, s: .5 + Math.random() });
+G.loop(dt => {
+  const sp = K.W * .55 + Math.min(t * 9, K.W * .7);
+  for (const c of clouds) { c.x -= dt * .02 * c.s * (run ? 2 : 1); if (c.x < -.2) c.x = 1.1 }
+  if (run) {
+    t += dt; dist += sp * dt; G.set('s', Math.floor(dist / 20));
+    d.vy += K.H * 3.6 * dt; d.y += d.vy * dt; if (d.y > 0) { d.y = 0; d.vy = 0 }
+    spawn -= dt;
+    if (spawn <= 0) {
+      const tall = Math.random() < .4, n = Math.random() < .3 ? 2 : 1, fly = t > 15 && Math.random() < .2;
+      obs.push(fly ? { x: K.W + 30, w: 34, h: 18, fly: true, y: GY() - 70 - Math.random() * 40 } : { x: K.W + 30, w: 18 * n + 6 * (n - 1), h: tall ? 48 : 32, fly: false });
+      spawn = Math.max(.6, 1.6 - t * .02) * (.7 + Math.random() * .7);
+    }
+    for (const o of obs) o.x -= sp * dt;
+    obs = obs.filter(o => o.x > -60);
+    const dx = DX(), top = GY() + d.y - 40;
+    for (const o of obs) {
+      const oy = o.fly ? o.y : GY() - o.h;
+      if (dx + 26 > o.x + 4 && dx + 4 < o.x + o.w - 4 && top + 40 > oy + 4 && top < oy + o.h) {
+        run = false; G.beep(100, .5, 'sawtooth'); const s = Math.floor(dist / 20);
+        G.set('b', G.best('dino', s)); G.overlay('Ouch!', 'Score: ' + s, 'Run again', start); break;
+      }
+    }
+  }
+  // draw
+  const bg = x.createLinearGradient(0, 0, 0, K.H); bg.addColorStop(0, '#1a0f45'); bg.addColorStop(1, '#3a1060'); x.fillStyle = bg; x.fillRect(0, 0, K.W, K.H);
+  x.fillStyle = 'rgba(255,255,255,.12)'; for (const c of clouds) { x.beginPath(); x.ellipse(c.x * K.W, c.y * K.H, 40 * c.s, 14 * c.s, 0, 0, 7); x.fill() }
+  x.fillStyle = '#ff8a3d'; x.shadowColor = '#ff8a3d'; x.shadowBlur = 40; x.beginPath(); x.arc(K.W * .8, K.H * .25, 34, 0, 7); x.fill(); x.shadowBlur = 0;
+  x.fillStyle = '#0b0820'; x.fillRect(0, GY(), K.W, K.H);
+  x.fillStyle = '#ff3df0'; x.fillRect(0, GY(), K.W, 3);
+  x.fillStyle = 'rgba(255,61,240,.4)'; for (let i = 0; i < 20; i++) x.fillRect(((i * 97 - dist * .5) % K.W + K.W) % K.W, GY() + 14 + (i % 3) * 10, 12, 2);
+  x.shadowBlur = 12;
+  for (const o of obs) {
+    if (o.fly) { x.shadowColor = x.fillStyle = '#ffe35a'; const f = Math.sin(t * 20) * 6; x.beginPath(); x.moveTo(o.x, o.y + 9); x.lineTo(o.x + 17, o.y + 9 - f); x.lineTo(o.x + 34, o.y + 9); x.lineTo(o.x + 17, o.y + 18); x.fill() }
+    else { x.shadowColor = x.fillStyle = '#4dff88'; x.fillRect(o.x, GY() - o.h, o.w, o.h); x.fillRect(o.x - 5, GY() - o.h * .7, 5, 10); x.fillRect(o.x + o.w, GY() - o.h * .55, 5, 10) }
+  }
+  if (d) {
+    const dx = DX(), top = GY() + d.y - 40; x.shadowColor = x.fillStyle = '#3df5ff';
+    x.fillRect(dx, top + 10, 26, 22); x.fillRect(dx + 12, top, 20, 14); x.fillRect(dx - 8, top + 14, 8, 6);
+    const leg = run && d.y === 0 ? (Math.sin(t * 25) > 0 ? 1 : 0) : 0;
+    x.fillRect(dx + 4, top + 32, 6, leg ? 8 : 5); x.fillRect(dx + 16, top + 32, 6, leg ? 5 : 8);
+    x.shadowBlur = 0; x.fillStyle = '#0b0820'; x.fillRect(dx + 25, top + 4, 3, 3);
+  }
+  x.shadowBlur = 0;
+});
+G.overlay('Dino Run', 'Tap (or Space) to jump.<br>Jump over the cactus. Watch out for flying birds later!', 'Start', start);
+</script></body></html>

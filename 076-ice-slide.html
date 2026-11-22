@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Ice Slide</title><script>
+// Shared helpers for every arcade game
+const G = (() => {
+  const st = document.createElement('style');
+  st.textContent = `
+html,body{margin:0;height:100%;background:#0b0820;color:#fff;font-family:system-ui,-apple-system,sans-serif;overflow:hidden;
+  touch-action:none;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
+.hud{position:fixed;top:12px;left:0;right:0;display:flex;justify-content:space-between;padding:0 18px;font-weight:700;
+  letter-spacing:1px;z-index:5;pointer-events:none;color:#cfe8ff}
+.hud b{color:#fff;font-size:20px;text-shadow:0 0 10px #3df5ff}
+.ov{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  background:rgba(8,5,25,.85);z-index:10;text-align:center;padding:20px}
+.ov h1{margin:0 0 10px;font-size:clamp(30px,8vw,52px);background:linear-gradient(90deg,#3df5ff,#ff3df0);
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.ov p{opacity:.88;line-height:1.6;max-width:340px;margin:6px 0}
+.ov button{margin-top:18px;font:inherit;font-weight:800;font-size:18px;padding:13px 34px;border:0;border-radius:999px;
+  background:linear-gradient(90deg,#3df5ff,#ff3df0);color:#0b0820;cursor:pointer}
+`;
+  document.head.appendChild(st);
+
+  let ac;
+  function beep(f, d = .08, type = 'sine', v = .1) {
+    try {
+      ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.type = type; o.frequency.value = f;
+      g.gain.setValueAtTime(v, ac.currentTime);
+      g.gain.exponentialRampToValueAtTime(.001, ac.currentTime + d);
+      o.connect(g).connect(ac.destination); o.start(); o.stop(ac.currentTime + d);
+    } catch (e) {}
+  }
+  function getBest(k) { try { return +localStorage.getItem('arc_' + k) || 0 } catch (e) { return 0 } }
+  function setBest(k, v) { try { localStorage.setItem('arc_' + k, v) } catch (e) {} }
+  // Save if higher (or lower when lowerIsBetter). Returns current best.
+  function best(k, v, lowerIsBetter) {
+    const b = getBest(k);
+    if (v != null && (!b || (lowerIsBetter ? v < b : v > b))) { setBest(k, v); return v }
+    return b;
+  }
+  function set(id, v) { const e = document.getElementById(id); if (e) e.textContent = v }
+
+  function overlay(title, html, btn, cb) {
+    let o = document.querySelector('.ov');
+    if (!o) { o = document.createElement('div'); o.className = 'ov'; document.body.appendChild(o) }
+    o.innerHTML = `<h1>${title}</h1><p>${html}</p><button>${btn}</button>`;
+    o.style.display = 'flex';
+    o.addEventListener('pointerdown', e => e.stopPropagation());
+    o.querySelector('button').onclick = e => { e.stopPropagation(); o.style.display = 'none'; beep(440, .08, 'triangle'); cb() };
+  }
+
+  // Swipe (touch/mouse) + arrow keys / WASD → 'L','R','U','D'
+  function swipe(cb) {
+    let sx = null, sy = null;
+    addEventListener('pointerdown', e => { sx = e.clientX; sy = e.clientY });
+    addEventListener('pointerup', e => {
+      if (sx == null) return;
+      const dx = e.clientX - sx, dy = e.clientY - sy; sx = null;
+      if (Math.max(Math.abs(dx), Math.abs(dy)) < 20) return;
+      cb(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'R' : 'L') : (dy > 0 ? 'D' : 'U'));
+    });
+    addEventListener('keydown', e => {
+      const m = { ArrowLeft: 'L', ArrowRight: 'R', ArrowUp: 'U', ArrowDown: 'D', a: 'L', d: 'R', w: 'U', s: 'D' }[e.key];
+      if (m) { e.preventDefault(); cb(m) }
+    });
+  }
+
+  // Full-screen crisp canvas. Returns {c, x, W, H}; set .onresize to react.
+  function canvas() {
+    const c = document.createElement('canvas');
+    c.style.cssText = 'display:block;width:100vw;height:100vh';
+    document.body.prepend(c);
+    const o = { c, x: c.getContext('2d'), W: 0, H: 0 };
+    function r() {
+      const d = Math.min(devicePixelRatio || 1, 2);
+      o.W = innerWidth; o.H = innerHeight; c.width = o.W * d; c.height = o.H * d;
+      o.x.setTransform(d, 0, 0, d, 0, 0); o.onresize && o.onresize();
+    }
+    addEventListener('resize', r); r();
+    return o;
+  }
+
+  // Game loop with delta time (seconds, capped)
+  function loop(fn) {
+    let last = performance.now();
+    function f(t) { const dt = Math.min(.05, (t - last) / 1000); last = t; fn(dt); requestAnimationFrame(f) }
+    requestAnimationFrame(f);
+  }
+
+  return { beep, getBest, setBest, best, set, overlay, swipe, canvas, loop };
+})();
+
+</script>
+<style>#rs{position:fixed;right:12px;bottom:12px;z-index:20;font:inherit;font-weight:700;font-size:14px;color:#0b0820;background:#3df5ff;border:0;border-radius:999px;padding:8px 14px}</style></head><body>
+<div class="hud"><span>Level <b id="s">1</b></span><span>Moves <b id="m">0</b> (best <b id="par">0</b>)</span><span>Top <b id="b">0</b></span></div>
+<button id="rs">↺ Retry</button>
+<script>
+const K = G.canvas(), x = K.x, N = 8;
+let rock, start, goal, me, par, moves = 0, level = 1, run = false, anim = null, cell, ox, oy, trail = [];
+G.set('b', G.best('iceslide'));
+K.onresize = () => { cell = Math.floor(Math.min(K.W - 20, K.H - 150) / N); ox = (K.W - cell * N) / 2; oy = (K.H - cell * N) / 2 + 10 }; K.onresize();
+const D = { U: [-1, 0], D: [1, 0], L: [0, -1], R: [0, 1] };
+function slide(p, d) { let [r, c] = p; const [dr, dc] = D[d]; while (true) { const nr = r + dr, nc = c + dc; if (nr < 0 || nc < 0 || nr >= N || nc >= N || rock[nr * N + nc]) break; r = nr; c = nc } return [r, c] }
+function make() {
+  const want = Math.min(3 + level, 12); start = null;
+  for (let tries = 0; tries < 400; tries++) {
+    rock = [...Array(N * N)].map(() => Math.random() < .17); const s = Math.random() * N * N | 0; if (rock[s]) continue;
+    const dist = { [s]: 0 }, q = [[s / N | 0, s % N]];
+    while (q.length) { const p = q.shift(), k = p[0] * N + p[1]; for (const d in D) { const n = slide(p, d), nk = n[0] * N + n[1]; if (dist[nk] == null) { dist[nk] = dist[k] + 1; q.push(n) } } }
+    const far = Object.entries(dist).filter(([, v]) => v >= Math.max(2, want - 2) && v <= want); if (!far.length) continue;
+    const [gk, gv] = far[Math.random() * far.length | 0]; start = [s / N | 0, s % N]; goal = [+gk / N | 0, +gk % N]; par = gv; break;
+  }
+  if (!start || rock[start[0] * N + start[1]]) { rock = Array(N * N).fill(false); start = [0, 0]; goal = [N - 1, N - 1]; par = 2 } // safety fallback
+  reset(); G.set('s', level); G.set('par', par);
+}
+function reset() { me = start.slice(); moves = 0; trail = []; anim = null; run = true; G.set('m', 0) }
+document.getElementById('rs').onclick = () => { if (run || anim) reset() };
+G.swipe(d => {
+  if (!run || anim) return; const n = slide(me, d); if (n[0] === me[0] && n[1] === me[1]) return;
+  anim = { from: me.slice(), to: n, t: 0, dur: Math.max(.08, (Math.abs(n[0] - me[0]) + Math.abs(n[1] - me[1])) * .05) }; trail.push(me.slice()); moves++; G.set('m', moves); G.beep(500, .05, 'triangle', .05);
+});
+G.loop(dt => {
+  if (anim) { anim.t += dt; if (anim.t >= anim.dur) { me = anim.to; anim = null; G.beep(250, .04, 'square', .04);
+      if (me[0] === goal[0] && me[1] === goal[1]) { run = false; G.set('b', G.best('iceslide', level)); G.beep(900, .3, 'triangle'); const msg = moves <= par ? 'Perfect! Solved in the fewest moves (' + par + ').' : 'Solved in ' + moves + ' moves. Best possible: ' + par + '.'; setTimeout(() => G.overlay('Level ' + level + ' done! 🧊', msg, 'Next level', () => { level++; make() }), 400) } } }
+  x.fillStyle = '#0b0820'; x.fillRect(0, 0, K.W, K.H); if (!rock) return;
+  for (let i = 0; i < N * N; i++) { const r = i / N | 0, c = i % N, px = ox + c * cell, py = oy + r * cell;
+    x.fillStyle = (r + c) % 2 ? '#bfe9ff' : '#aee0fa'; x.fillRect(px, py, cell, cell);
+    if (rock[i]) { x.fillStyle = '#5a5a7a'; x.beginPath(); x.moveTo(px + cell * .1, py + cell * .9); x.lineTo(px + cell * .25, py + cell * .2); x.lineTo(px + cell * .7, py + cell * .1); x.lineTo(px + cell * .92, py + cell * .85); x.closePath(); x.fill(); x.fillStyle = '#7a7a9a'; x.beginPath(); x.moveTo(px + cell * .3, py + cell * .25); x.lineTo(px + cell * .6, py + cell * .18); x.lineTo(px + cell * .45, py + cell * .5); x.fill() } }
+  x.fillStyle = 'rgba(61,245,255,.35)'; for (const p of trail) x.fillRect(ox + p[1] * cell + cell * .35, oy + p[0] * cell + cell * .35, cell * .3, cell * .3);
+  const gx = ox + (goal[1] + .5) * cell, gy = oy + (goal[0] + .5) * cell; x.fillStyle = '#13a05a'; x.beginPath(); x.arc(gx, gy, cell * .38, 0, 7); x.fill(); x.font = `${cell * .5}px system-ui`; x.textAlign = 'center'; x.textBaseline = 'middle'; x.fillText('🏁', gx, gy);
+  let pr = me[0], pc = me[1]; if (anim) { const p = Math.min(1, anim.t / anim.dur); pr = anim.from[0] + (anim.to[0] - anim.from[0]) * p; pc = anim.from[1] + (anim.to[1] - anim.from[1]) * p }
+  x.font = `${cell * .7}px system-ui`; x.fillStyle = '#fff'; x.fillText('🐧', ox + (pc + .5) * cell, oy + (pr + .55) * cell);
+});
+make();
+G.overlay('Ice Slide', 'Swipe (or arrow keys) to slide the penguin.<br>On ice it keeps sliding until it hits a rock or the edge.<br>Stop exactly on the 🏁 flag. Try to match the best move count!', 'Start', () => {});
+</script></body></html>

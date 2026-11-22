@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Tank Duel</title><script>
+// Shared helpers for every arcade game
+const G = (() => {
+  const st = document.createElement('style');
+  st.textContent = `
+html,body{margin:0;height:100%;background:#0b0820;color:#fff;font-family:system-ui,-apple-system,sans-serif;overflow:hidden;
+  touch-action:none;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
+.hud{position:fixed;top:12px;left:0;right:0;display:flex;justify-content:space-between;padding:0 18px;font-weight:700;
+  letter-spacing:1px;z-index:5;pointer-events:none;color:#cfe8ff}
+.hud b{color:#fff;font-size:20px;text-shadow:0 0 10px #3df5ff}
+.ov{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  background:rgba(8,5,25,.85);z-index:10;text-align:center;padding:20px}
+.ov h1{margin:0 0 10px;font-size:clamp(30px,8vw,52px);background:linear-gradient(90deg,#3df5ff,#ff3df0);
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.ov p{opacity:.88;line-height:1.6;max-width:340px;margin:6px 0}
+.ov button{margin-top:18px;font:inherit;font-weight:800;font-size:18px;padding:13px 34px;border:0;border-radius:999px;
+  background:linear-gradient(90deg,#3df5ff,#ff3df0);color:#0b0820;cursor:pointer}
+`;
+  document.head.appendChild(st);
+
+  let ac;
+  function beep(f, d = .08, type = 'sine', v = .1) {
+    try {
+      ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.type = type; o.frequency.value = f;
+      g.gain.setValueAtTime(v, ac.currentTime);
+      g.gain.exponentialRampToValueAtTime(.001, ac.currentTime + d);
+      o.connect(g).connect(ac.destination); o.start(); o.stop(ac.currentTime + d);
+    } catch (e) {}
+  }
+  function getBest(k) { try { return +localStorage.getItem('arc_' + k) || 0 } catch (e) { return 0 } }
+  function setBest(k, v) { try { localStorage.setItem('arc_' + k, v) } catch (e) {} }
+  // Save if higher (or lower when lowerIsBetter). Returns current best.
+  function best(k, v, lowerIsBetter) {
+    const b = getBest(k);
+    if (v != null && (!b || (lowerIsBetter ? v < b : v > b))) { setBest(k, v); return v }
+    return b;
+  }
+  function set(id, v) { const e = document.getElementById(id); if (e) e.textContent = v }
+
+  function overlay(title, html, btn, cb) {
+    let o = document.querySelector('.ov');
+    if (!o) { o = document.createElement('div'); o.className = 'ov'; document.body.appendChild(o) }
+    o.innerHTML = `<h1>${title}</h1><p>${html}</p><button>${btn}</button>`;
+    o.style.display = 'flex';
+    o.addEventListener('pointerdown', e => e.stopPropagation());
+    o.querySelector('button').onclick = e => { e.stopPropagation(); o.style.display = 'none'; beep(440, .08, 'triangle'); cb() };
+  }
+
+  // Swipe (touch/mouse) + arrow keys / WASD → 'L','R','U','D'
+  function swipe(cb) {
+    let sx = null, sy = null;
+    addEventListener('pointerdown', e => { sx = e.clientX; sy = e.clientY });
+    addEventListener('pointerup', e => {
+      if (sx == null) return;
+      const dx = e.clientX - sx, dy = e.clientY - sy; sx = null;
+      if (Math.max(Math.abs(dx), Math.abs(dy)) < 20) return;
+      cb(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'R' : 'L') : (dy > 0 ? 'D' : 'U'));
+    });
+    addEventListener('keydown', e => {
+      const m = { ArrowLeft: 'L', ArrowRight: 'R', ArrowUp: 'U', ArrowDown: 'D', a: 'L', d: 'R', w: 'U', s: 'D' }[e.key];
+      if (m) { e.preventDefault(); cb(m) }
+    });
+  }
+
+  // Full-screen crisp canvas. Returns {c, x, W, H}; set .onresize to react.
+  function canvas() {
+    const c = document.createElement('canvas');
+    c.style.cssText = 'display:block;width:100vw;height:100vh';
+    document.body.prepend(c);
+    const o = { c, x: c.getContext('2d'), W: 0, H: 0 };
+    function r() {
+      const d = Math.min(devicePixelRatio || 1, 2);
+      o.W = innerWidth; o.H = innerHeight; c.width = o.W * d; c.height = o.H * d;
+      o.x.setTransform(d, 0, 0, d, 0, 0); o.onresize && o.onresize();
+    }
+    addEventListener('resize', r); r();
+    return o;
+  }
+
+  // Game loop with delta time (seconds, capped)
+  function loop(fn) {
+    let last = performance.now();
+    function f(t) { const dt = Math.min(.05, (t - last) / 1000); last = t; fn(dt); requestAnimationFrame(f) }
+    requestAnimationFrame(f);
+  }
+
+  return { beep, getBest, setBest, best, set, overlay, swipe, canvas, loop };
+})();
+
+</script></head><body>
+<div class="hud"><span>You <b id="p">❤️❤️❤️</b></span><span>Wins <b id="b">0</b></span><span>CPU <b id="c">❤️❤️❤️</b></span></div>
+<script>
+const K = G.canvas(), x = K.x, GR = 300;
+let hills = [], me, cpu, shell = null, turn = 'me', drag = null, wind = 0, run = false, booms = [], msg = null, cpuErr = 1, aimShow = null;
+G.set('b', G.getBest('tanks'));
+function makeHills() {
+  hills = []; const a1 = Math.random() * 2, a2 = Math.random() * 2, base = K.H * .7;
+  for (let i = 0; i <= 80; i++) { const px = i * K.W / 80; hills.push(base - Math.sin(i / 80 * Math.PI) * K.H * (.12 + Math.random() * .0) - Math.sin(i * .18 + a1) * 25 - Math.sin(i * .07 + a2) * 30) }
+}
+const hy = px => { const i = Math.max(0, Math.min(79.999, px / K.W * 80)), k = i | 0; return hills[k] + (hills[k + 1] - hills[k]) * (i - k) };
+const hearts = n => '❤️'.repeat(Math.max(0, n)) + '🖤'.repeat(3 - Math.max(0, n));
+function start() { makeHills(); me = { x: K.W * .12, hp: 3, ang: -.8 }; cpu = { x: K.W * .88, hp: 3, ang: -Math.PI + .8 }; me.y = hy(me.x); cpu.y = hy(cpu.x); cpuErr = 1; run = true; newTurn('me') }
+function newTurn(who) { turn = who; wind = (Math.random() - .5) * 120; G.set('p', hearts(me.hp)); G.set('c', hearts(cpu.hp)); if (who === 'cpu') setTimeout(cpuShoot, 900) }
+addEventListener('pointerdown', e => { if (run && turn === 'me' && !shell) drag = { x: e.clientX, y: e.clientY, cx: e.clientX, cy: e.clientY } });
+addEventListener('pointermove', e => { if (drag) { drag.cx = e.clientX; drag.cy = e.clientY } });
+addEventListener('pointerup', () => {
+  if (!drag) return; const dx = drag.x - drag.cx, dy = drag.y - drag.cy, d = Math.hypot(dx, dy); drag = null; if (d < 15) return;
+  const p = Math.min(d, 180) / 180 * Math.sqrt(K.W * GR * 1.15); fire(me, Math.atan2(dy, dx), p);
+});
+function fire(t, ang, pow) { t.ang = ang; shell = { x: t.x + Math.cos(ang) * 22, y: t.y - 10 + Math.sin(ang) * 22, vx: Math.cos(ang) * pow, vy: Math.sin(ang) * pow, from: t }; G.beep(160, .2, 'sawtooth', .1) }
+function sim(ang, pow) { let px = cpu.x + Math.cos(ang) * 22, py = cpu.y - 10 + Math.sin(ang) * 22, vx = Math.cos(ang) * pow, vy = Math.sin(ang) * pow; for (let i = 0; i < 600; i++) { const s = 1 / 60; vy += GR * s; vx += wind * s; px += vx * s; py += vy * s; if (px < 0 || px > K.W) return px; if (py >= hy(px)) return px } return px }
+function cpuShoot() {
+  if (!run) return; let best = null, bd = 1e9;
+  for (let k = 0; k < 120; k++) { const ang = -Math.PI + .3 + Math.random() * 1.1, pow = Math.random() * Math.sqrt(K.W * GR * 1.15); const land = sim(ang, pow), d = Math.abs(land - me.x); if (d < bd) { bd = d; best = [ang, pow] } }
+  const err = cpuErr * (.08 + Math.random() * .12); fire(cpu, best[0], best[1] * (1 + (Math.random() < .5 ? -err : err))); cpuErr = Math.max(.15, cpuErr * .7);
+}
+function explode(px, py) {
+  booms.push({ x: px, y: py, t: 0 }); G.beep(90, .4, 'sawtooth', .15); const target = shell.from === me ? cpu : me; shell = null;
+  for (let i = 0; i <= 80; i++) { const hx = i * K.W / 80, d = Math.abs(hx - px); if (d < 34) hills[i] = Math.max(hills[i], py + Math.sqrt(34 * 34 - d * d) * .7) }
+  me.y = hy(me.x); cpu.y = hy(cpu.x);
+  let hitT = null; for (const t of [me, cpu]) if (Math.hypot(t.x - px, t.y - 8 - py) < 38) { t.hp--; hitT = t }
+  msg = { t: hitT ? (hitT === cpu ? 'Direct hit! 💥' : 'You got hit!') : 'Missed', life: 1.2 };
+  if (me.hp <= 0 || cpu.hp <= 0) {
+    run = false; const win = cpu.hp <= 0; if (win) { const w = G.getBest('tanks') + 1; G.setBest('tanks', w); G.set('b', w) }
+    G.set('p', hearts(me.hp)); G.set('c', hearts(cpu.hp)); setTimeout(() => G.overlay(win ? 'Victory! 🎖️' : 'Your tank is destroyed', win ? 'You beat the CPU tank.' : 'The CPU wins this time.', 'Play again', start), 1000); return;
+  }
+  setTimeout(() => newTurn(target === cpu || !hitT ? (turn === 'me' ? 'cpu' : 'me') : (turn === 'me' ? 'cpu' : 'me')), 900);
+}
+G.loop(dt => {
+  if (msg) { msg.life -= dt; if (msg.life <= 0) msg = null }
+  for (const b of booms) b.t += dt; booms = booms.filter(b => b.t < .6);
+  if (shell) {
+    for (let k = 0; k < 3 && shell; k++) {
+      const s = dt / 3; shell.vy += GR * s; shell.vx += wind * s; shell.x += shell.vx * s; shell.y += shell.vy * s;
+      if (shell.x < -50 || shell.x > K.W + 50 || shell.y > K.H) { shell = null; msg = { t: 'Missed', life: 1 }; setTimeout(() => newTurn(turn === 'me' ? 'cpu' : 'me'), 600); break }
+      const other = shell.from === me ? cpu : me;
+      if (Math.hypot(shell.x - other.x, shell.y - other.y + 8) < 16 || shell.y >= hy(shell.x)) explode(shell.x, shell.y);
+    }
+  }
+  const sky = x.createLinearGradient(0, 0, 0, K.H); sky.addColorStop(0, '#1a0f45'); sky.addColorStop(1, '#5a2a6a'); x.fillStyle = sky; x.fillRect(0, 0, K.W, K.H);
+  if (!hills.length) return;
+  x.fillStyle = '#2a6a3a'; x.beginPath(); x.moveTo(0, K.H); hills.forEach((h, i) => x.lineTo(i * K.W / 80, h)); x.lineTo(K.W, K.H); x.fill();
+  x.strokeStyle = '#4dff88'; x.lineWidth = 2; x.beginPath(); hills.forEach((h, i) => i ? x.lineTo(i * K.W / 80, h) : x.moveTo(0, h)); x.stroke();
+  const tank = (t, c) => { x.fillStyle = c; x.shadowColor = c; x.shadowBlur = 10; x.fillRect(t.x - 16, t.y - 12, 32, 12); x.beginPath(); x.arc(t.x, t.y - 12, 9, Math.PI, 0); x.fill(); x.strokeStyle = c; x.lineWidth = 4; x.beginPath(); x.moveTo(t.x, t.y - 14); x.lineTo(t.x + Math.cos(t.ang) * 22, t.y - 14 + Math.sin(t.ang) * 22); x.stroke(); x.shadowBlur = 0 };
+  if (me) { if (me.hp > 0) tank(me, '#3df5ff'); if (cpu.hp > 0) tank(cpu, '#ff3df0') }
+  if (drag && turn === 'me') {
+    const dx = drag.x - drag.cx, dy = drag.y - drag.cy, d = Math.min(Math.hypot(dx, dy), 180); me.ang = Math.atan2(dy, dx);
+    const p = d / 180 * Math.sqrt(K.W * GR * 1.15); let px = me.x + Math.cos(me.ang) * 22, py = me.y - 10 + Math.sin(me.ang) * 22, vx = Math.cos(me.ang) * p, vy = Math.sin(me.ang) * p;
+    x.fillStyle = 'rgba(255,255,255,.6)'; for (let i = 0; i < 14; i++) { for (let k = 0; k < 3; k++) { vy += GR / 60; vx += wind / 60; px += vx / 60; py += vy / 60 } x.beginPath(); x.arc(px, py, 2.5, 0, 7); x.fill() }
+    x.fillStyle = '#fff'; x.font = '700 13px system-ui'; x.textAlign = 'left'; x.fillText('Power ' + Math.round(d / 1.8) + '%', me.x - 10, me.y - 50);
+  }
+  if (shell) { x.fillStyle = '#ffe35a'; x.beginPath(); x.arc(shell.x, shell.y, 4, 0, 7); x.fill() }
+  for (const b of booms) { const r = 10 + b.t * 80; x.fillStyle = `rgba(255,177,61,${1 - b.t / .6})`; x.beginPath(); x.arc(b.x, b.y, r, 0, 7); x.fill() }
+  if (run) { x.fillStyle = '#cfe8ff'; x.font = '700 15px system-ui'; x.textAlign = 'center'; x.fillText((turn === 'me' ? 'Your turn — pull back & release' : 'CPU is aiming…') + '   Wind ' + (wind > 0 ? '→ ' : '← ') + Math.abs(wind / 20).toFixed(1), K.W / 2, 72) }
+  if (msg) { x.globalAlpha = Math.min(1, msg.life); x.fillStyle = '#ffe35a'; x.font = '900 28px system-ui'; x.textAlign = 'center'; x.fillText(msg.t, K.W / 2, K.H * .3); x.globalAlpha = 1 }
+});
+G.overlay('Tank Duel', 'Your tank is blue, on the left.<br>Touch anywhere, pull back like a slingshot, and let go to fire. The dots show your shot.<br>Watch the wind! Hit the CPU 3 times to win.', 'Start', start);
+</script></body></html>

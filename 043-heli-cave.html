@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Heli Cave</title><script>
+// Shared helpers for every arcade game
+const G = (() => {
+  const st = document.createElement('style');
+  st.textContent = `
+html,body{margin:0;height:100%;background:#0b0820;color:#fff;font-family:system-ui,-apple-system,sans-serif;overflow:hidden;
+  touch-action:none;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
+.hud{position:fixed;top:12px;left:0;right:0;display:flex;justify-content:space-between;padding:0 18px;font-weight:700;
+  letter-spacing:1px;z-index:5;pointer-events:none;color:#cfe8ff}
+.hud b{color:#fff;font-size:20px;text-shadow:0 0 10px #3df5ff}
+.ov{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  background:rgba(8,5,25,.85);z-index:10;text-align:center;padding:20px}
+.ov h1{margin:0 0 10px;font-size:clamp(30px,8vw,52px);background:linear-gradient(90deg,#3df5ff,#ff3df0);
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.ov p{opacity:.88;line-height:1.6;max-width:340px;margin:6px 0}
+.ov button{margin-top:18px;font:inherit;font-weight:800;font-size:18px;padding:13px 34px;border:0;border-radius:999px;
+  background:linear-gradient(90deg,#3df5ff,#ff3df0);color:#0b0820;cursor:pointer}
+`;
+  document.head.appendChild(st);
+
+  let ac;
+  function beep(f, d = .08, type = 'sine', v = .1) {
+    try {
+      ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.type = type; o.frequency.value = f;
+      g.gain.setValueAtTime(v, ac.currentTime);
+      g.gain.exponentialRampToValueAtTime(.001, ac.currentTime + d);
+      o.connect(g).connect(ac.destination); o.start(); o.stop(ac.currentTime + d);
+    } catch (e) {}
+  }
+  function getBest(k) { try { return +localStorage.getItem('arc_' + k) || 0 } catch (e) { return 0 } }
+  function setBest(k, v) { try { localStorage.setItem('arc_' + k, v) } catch (e) {} }
+  // Save if higher (or lower when lowerIsBetter). Returns current best.
+  function best(k, v, lowerIsBetter) {
+    const b = getBest(k);
+    if (v != null && (!b || (lowerIsBetter ? v < b : v > b))) { setBest(k, v); return v }
+    return b;
+  }
+  function set(id, v) { const e = document.getElementById(id); if (e) e.textContent = v }
+
+  function overlay(title, html, btn, cb) {
+    let o = document.querySelector('.ov');
+    if (!o) { o = document.createElement('div'); o.className = 'ov'; document.body.appendChild(o) }
+    o.innerHTML = `<h1>${title}</h1><p>${html}</p><button>${btn}</button>`;
+    o.style.display = 'flex';
+    o.addEventListener('pointerdown', e => e.stopPropagation());
+    o.querySelector('button').onclick = e => { e.stopPropagation(); o.style.display = 'none'; beep(440, .08, 'triangle'); cb() };
+  }
+
+  // Swipe (touch/mouse) + arrow keys / WASD → 'L','R','U','D'
+  function swipe(cb) {
+    let sx = null, sy = null;
+    addEventListener('pointerdown', e => { sx = e.clientX; sy = e.clientY });
+    addEventListener('pointerup', e => {
+      if (sx == null) return;
+      const dx = e.clientX - sx, dy = e.clientY - sy; sx = null;
+      if (Math.max(Math.abs(dx), Math.abs(dy)) < 20) return;
+      cb(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'R' : 'L') : (dy > 0 ? 'D' : 'U'));
+    });
+    addEventListener('keydown', e => {
+      const m = { ArrowLeft: 'L', ArrowRight: 'R', ArrowUp: 'U', ArrowDown: 'D', a: 'L', d: 'R', w: 'U', s: 'D' }[e.key];
+      if (m) { e.preventDefault(); cb(m) }
+    });
+  }
+
+  // Full-screen crisp canvas. Returns {c, x, W, H}; set .onresize to react.
+  function canvas() {
+    const c = document.createElement('canvas');
+    c.style.cssText = 'display:block;width:100vw;height:100vh';
+    document.body.prepend(c);
+    const o = { c, x: c.getContext('2d'), W: 0, H: 0 };
+    function r() {
+      const d = Math.min(devicePixelRatio || 1, 2);
+      o.W = innerWidth; o.H = innerHeight; c.width = o.W * d; c.height = o.H * d;
+      o.x.setTransform(d, 0, 0, d, 0, 0); o.onresize && o.onresize();
+    }
+    addEventListener('resize', r); r();
+    return o;
+  }
+
+  // Game loop with delta time (seconds, capped)
+  function loop(fn) {
+    let last = performance.now();
+    function f(t) { const dt = Math.min(.05, (t - last) / 1000); last = t; fn(dt); requestAnimationFrame(f) }
+    requestAnimationFrame(f);
+  }
+
+  return { beep, getBest, setBest, best, set, overlay, swipe, canvas, loop };
+})();
+
+</script></head><body>
+<div class="hud"><span>Distance <b id="s">0</b></span><span>Best <b id="b">0</b></span></div>
+<script>
+const K = G.canvas(), x = K.x, SEG = 16;
+let cave = [], blocks = [], h = null, hold = false, run = false, dist = 0, t = 0, smoke = [], scroll = 0;
+G.set('b', G.best('heli'));
+function genSeg(prev) {
+  const gapMin = Math.max(K.H * .32, K.H * .62 - dist * .004), gap = Math.max(gapMin, (prev.bot - prev.top) - 2 + (Math.random() - .45) * 6);
+  let mid = (prev.top + prev.bot) / 2 + (Math.random() - .5) * 18; mid = Math.max(60 + gap / 2, Math.min(K.H - 30 - gap / 2, mid));
+  return { top: mid - gap / 2, bot: mid + gap / 2 };
+}
+function start() {
+  cave = []; blocks = []; smoke = []; dist = 0; t = 0; scroll = 0;
+  let s = { top: K.H * .15, bot: K.H * .85 }; for (let i = 0; i < K.W / SEG + 3; i++) { cave.push(s); s = { top: s.top, bot: s.bot } }
+  h = { y: K.H / 2, vy: 0 }; run = true; G.set('s', 0);
+}
+addEventListener('pointerdown', () => hold = true); addEventListener('pointerup', () => hold = false); addEventListener('pointercancel', () => hold = false);
+addEventListener('keydown', e => { if (e.code == 'Space') { e.preventDefault(); hold = true } }); addEventListener('keyup', e => { if (e.code == 'Space') hold = false });
+G.loop(dt => {
+  t += dt;
+  for (const s of smoke) { s.x -= 120 * dt; s.life -= dt * 1.5 } smoke = smoke.filter(s => s.life > 0);
+  const hx = K.W * .25;
+  if (run) {
+    const sp = 200 + Math.min(dist * .04, 220); dist += sp * dt; scroll += sp * dt; G.set('s', Math.floor(dist / 10));
+    while (scroll >= SEG) { scroll -= SEG; cave.shift(); cave.push(genSeg(cave[cave.length - 1])) }
+    for (const b of blocks) b.x -= sp * dt; blocks = blocks.filter(b => b.x > -40);
+    if (Math.random() < dt * (.4 + dist / 20000) && dist > 600) { const c = cave[cave.length - 1], bh = (c.bot - c.top) * .3; blocks.push({ x: K.W + 20, y: c.top + Math.random() * (c.bot - c.top - bh), w: 22, h: bh }) }
+    h.vy += (hold ? -1100 : 900) * dt; h.vy = Math.max(-380, Math.min(420, h.vy)); h.y += h.vy * dt;
+    if ((t * 30 | 0) % 2) smoke.push({ x: hx - 20, y: h.y + 4, life: 1 });
+    const i = Math.floor((hx + scroll) / SEG), c = cave[i];
+    let dead = !c || h.y - 10 < c.top || h.y + 10 > c.bot;
+    for (const b of blocks) if (hx + 18 > b.x && hx - 18 < b.x + b.w && h.y + 9 > b.y && h.y - 9 < b.y + b.h) dead = true;
+    if (dead) { run = false; G.beep(90, .6, 'sawtooth', .15); const s = Math.floor(dist / 10); G.set('b', G.best('heli', s)); G.overlay('Crash!', 'Distance: ' + s, 'Fly again', start) }
+  }
+  x.fillStyle = '#12082a'; x.fillRect(0, 0, K.W, K.H);
+  if (!cave.length) return;
+  x.fillStyle = '#2fd673'; x.shadowColor = '#4dff88'; x.shadowBlur = 10;
+  x.beginPath(); x.moveTo(-scroll, 0); cave.forEach((c, i) => x.lineTo(i * SEG - scroll, c.top)); x.lineTo(K.W + 40, 0); x.fill();
+  x.beginPath(); x.moveTo(-scroll, K.H); cave.forEach((c, i) => x.lineTo(i * SEG - scroll, c.bot)); x.lineTo(K.W + 40, K.H); x.fill();
+  x.fillStyle = '#ff4d6d'; x.shadowColor = '#ff4d6d'; for (const b of blocks) x.fillRect(b.x, b.y, b.w, b.h);
+  x.shadowBlur = 0;
+  for (const s of smoke) { x.globalAlpha = s.life * .4; x.fillStyle = '#ccc'; x.beginPath(); x.arc(s.x, s.y, 5 + (1 - s.life) * 6, 0, 7); x.fill() } x.globalAlpha = 1;
+  if (h) {
+    x.save(); x.translate(hx, h.y); x.rotate(h.vy / 1500);
+    x.fillStyle = '#ffe35a'; x.beginPath(); x.ellipse(0, 0, 16, 10, 0, 0, 7); x.fill(); x.fillRect(-28, -2, 16, 4); x.fillRect(-30, -7, 4, 10);
+    x.fillStyle = '#3df5ff'; x.beginPath(); x.ellipse(6, -2, 6, 5, 0, 0, 7); x.fill();
+    x.fillStyle = '#ddd'; const bl = Math.abs(Math.sin(t * 40)) * 22; x.fillRect(-bl, -14, bl * 2, 2); x.fillRect(-1, -14, 2, 5);
+    x.restore();
+  }
+});
+G.overlay('Heli Cave', 'Hold your finger down (or Space) to fly up.<br>Let go to drop.<br>Don\'t touch the cave walls or the red blocks.', 'Start', start);
+</script></body></html>

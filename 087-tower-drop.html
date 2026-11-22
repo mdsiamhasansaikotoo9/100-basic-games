@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Tower Drop</title><script>
+// Shared helpers for every arcade game
+const G = (() => {
+  const st = document.createElement('style');
+  st.textContent = `
+html,body{margin:0;height:100%;background:#0b0820;color:#fff;font-family:system-ui,-apple-system,sans-serif;overflow:hidden;
+  touch-action:none;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
+.hud{position:fixed;top:12px;left:0;right:0;display:flex;justify-content:space-between;padding:0 18px;font-weight:700;
+  letter-spacing:1px;z-index:5;pointer-events:none;color:#cfe8ff}
+.hud b{color:#fff;font-size:20px;text-shadow:0 0 10px #3df5ff}
+.ov{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  background:rgba(8,5,25,.85);z-index:10;text-align:center;padding:20px}
+.ov h1{margin:0 0 10px;font-size:clamp(30px,8vw,52px);background:linear-gradient(90deg,#3df5ff,#ff3df0);
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.ov p{opacity:.88;line-height:1.6;max-width:340px;margin:6px 0}
+.ov button{margin-top:18px;font:inherit;font-weight:800;font-size:18px;padding:13px 34px;border:0;border-radius:999px;
+  background:linear-gradient(90deg,#3df5ff,#ff3df0);color:#0b0820;cursor:pointer}
+`;
+  document.head.appendChild(st);
+
+  let ac;
+  function beep(f, d = .08, type = 'sine', v = .1) {
+    try {
+      ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.type = type; o.frequency.value = f;
+      g.gain.setValueAtTime(v, ac.currentTime);
+      g.gain.exponentialRampToValueAtTime(.001, ac.currentTime + d);
+      o.connect(g).connect(ac.destination); o.start(); o.stop(ac.currentTime + d);
+    } catch (e) {}
+  }
+  function getBest(k) { try { return +localStorage.getItem('arc_' + k) || 0 } catch (e) { return 0 } }
+  function setBest(k, v) { try { localStorage.setItem('arc_' + k, v) } catch (e) {} }
+  // Save if higher (or lower when lowerIsBetter). Returns current best.
+  function best(k, v, lowerIsBetter) {
+    const b = getBest(k);
+    if (v != null && (!b || (lowerIsBetter ? v < b : v > b))) { setBest(k, v); return v }
+    return b;
+  }
+  function set(id, v) { const e = document.getElementById(id); if (e) e.textContent = v }
+
+  function overlay(title, html, btn, cb) {
+    let o = document.querySelector('.ov');
+    if (!o) { o = document.createElement('div'); o.className = 'ov'; document.body.appendChild(o) }
+    o.innerHTML = `<h1>${title}</h1><p>${html}</p><button>${btn}</button>`;
+    o.style.display = 'flex';
+    o.addEventListener('pointerdown', e => e.stopPropagation());
+    o.querySelector('button').onclick = e => { e.stopPropagation(); o.style.display = 'none'; beep(440, .08, 'triangle'); cb() };
+  }
+
+  // Swipe (touch/mouse) + arrow keys / WASD → 'L','R','U','D'
+  function swipe(cb) {
+    let sx = null, sy = null;
+    addEventListener('pointerdown', e => { sx = e.clientX; sy = e.clientY });
+    addEventListener('pointerup', e => {
+      if (sx == null) return;
+      const dx = e.clientX - sx, dy = e.clientY - sy; sx = null;
+      if (Math.max(Math.abs(dx), Math.abs(dy)) < 20) return;
+      cb(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'R' : 'L') : (dy > 0 ? 'D' : 'U'));
+    });
+    addEventListener('keydown', e => {
+      const m = { ArrowLeft: 'L', ArrowRight: 'R', ArrowUp: 'U', ArrowDown: 'D', a: 'L', d: 'R', w: 'U', s: 'D' }[e.key];
+      if (m) { e.preventDefault(); cb(m) }
+    });
+  }
+
+  // Full-screen crisp canvas. Returns {c, x, W, H}; set .onresize to react.
+  function canvas() {
+    const c = document.createElement('canvas');
+    c.style.cssText = 'display:block;width:100vw;height:100vh';
+    document.body.prepend(c);
+    const o = { c, x: c.getContext('2d'), W: 0, H: 0 };
+    function r() {
+      const d = Math.min(devicePixelRatio || 1, 2);
+      o.W = innerWidth; o.H = innerHeight; c.width = o.W * d; c.height = o.H * d;
+      o.x.setTransform(d, 0, 0, d, 0, 0); o.onresize && o.onresize();
+    }
+    addEventListener('resize', r); r();
+    return o;
+  }
+
+  // Game loop with delta time (seconds, capped)
+  function loop(fn) {
+    let last = performance.now();
+    function f(t) { const dt = Math.min(.05, (t - last) / 1000); last = t; fn(dt); requestAnimationFrame(f) }
+    requestAnimationFrame(f);
+  }
+
+  return { beep, getBest, setBest, best, set, overlay, swipe, canvas, loop };
+})();
+
+</script></head><body>
+<div class="hud"><span>Floors <b id="s">0</b></span><span>Best <b id="b">0</b></span></div>
+<script>
+const K = G.canvas(), x = K.x, GAP = 150, SEG = 12;
+let floors = [], ball = null, shift = 0, cam = 0, run = false, score = 0, dragX = null, parts = [], streak = 0;
+G.set('b', G.best('towerdrop'));
+// each floor: array of SEG cells: 0 solid, 1 hole, 2 danger. Drawn across width, shifted by `shift`.
+function makeFloor(i) {
+  const f = Array(SEG).fill(0), h = Math.random() * SEG | 0, hw = i < 3 ? 3 : 2; for (let k = 0; k < hw; k++) f[(h + k) % SEG] = 1;
+  if (i > 1) { const nd = Math.min(1 + (i / 8 | 0), 5); for (let k = 0; k < nd; k++) { const d = Math.random() * SEG | 0; if (f[d] === 0 && f[(d + SEG - 1) % SEG] !== 1 && f[(d + 1) % SEG] !== 1) f[d] = 2 } }
+  return { y: 220 + i * GAP, cells: f, passed: false };
+}
+function start() { floors = []; for (let i = 0; i < 8; i++) floors.push(makeFloor(i)); ball = { y: 120, vy: 0 }; shift = 0; cam = 0; score = 0; streak = 0; run = true; G.set('s', 0) }
+addEventListener('pointerdown', e => dragX = e.clientX);
+addEventListener('pointermove', e => { if (dragX != null) { shift += (e.clientX - dragX) / K.W * SEG; dragX = e.clientX } });
+addEventListener('pointerup', () => dragX = null);
+addEventListener('keydown', e => { if (e.key === 'ArrowLeft') shift -= .5; if (e.key === 'ArrowRight') shift += .5 });
+const cellAtBall = f => { const cw = K.W / SEG, idx = Math.floor(((K.W / 2) / cw - shift) % SEG + SEG * 10) % SEG; return f.cells[idx] };
+G.loop(dt => {
+  for (const p of parts) { p.x += p.vx * dt; p.y += p.vy * dt; p.vy += 600 * dt; p.life -= dt * 1.5 } parts = parts.filter(p => p.life > 0);
+  if (run) {
+    const prevY = ball.y; ball.vy += 1500 * dt; ball.y += ball.vy * dt;
+    for (const f of floors) {
+      if (prevY + 12 <= f.y && ball.y + 12 >= f.y) {
+        const c = cellAtBall(f);
+        if (c === 1) { if (!f.passed) { f.passed = true; score++; streak++; G.set('s', score); G.beep(500 + Math.min(streak, 10) * 60, .06, 'triangle') } }
+        else if (c === 2 && streak < 3) { run = false; G.beep(110, .5, 'sawtooth'); for (let i = 0; i < 30; i++) { const a = Math.random() * 7; parts.push({ x: K.W / 2, y: f.y - 12, vx: Math.cos(a) * 200, vy: Math.sin(a) * 200 - 100, life: 1, c: '#ffe35a' }) } G.set('b', G.best('towerdrop', score)); setTimeout(() => G.overlay('Splat!', 'You landed on red.<br>Floors: ' + score, 'Play again', start), 700); break }
+        else {
+          if (streak >= 3) { const cw = K.W / SEG; for (let k = 0; k < SEG; k++) f.cells[k] = 1; f.passed = true; score++; G.set('s', score); G.beep(1100, .2, 'triangle'); for (let i = 0; i < 20; i++) { const a = Math.random() * 7; parts.push({ x: K.W / 2, y: f.y, vx: Math.cos(a) * 250, vy: Math.sin(a) * 250, life: 1, c: '#3df5ff' }) } streak = 0 }
+          else { ball.y = f.y - 12; ball.vy = -620; streak = 0; G.beep(260, .04, 'square', .04); parts.push({ x: K.W / 2, y: f.y, vx: 0, vy: 0, life: .4, c: '#ff3df0', splat: 1 }) }
+        }
+      }
+    }
+    if (ball.y - cam > K.H * .4) cam = ball.y - K.H * .4;
+    floors = floors.filter(f => f.y > cam - 50);
+    while (floors.length < 8) { const last = floors[floors.length - 1]; const nf = makeFloor(score + floors.length); nf.y = last.y + GAP; floors.push(nf) }
+  }
+  x.fillStyle = '#120a30'; x.fillRect(0, 0, K.W, K.H);
+  x.fillStyle = 'rgba(255,255,255,.04)'; x.fillRect(K.W / 2 - 14, 0, 28, K.H);
+  const cw = K.W / SEG;
+  for (const f of floors) {
+    const y = f.y - cam; if (y < -20 || y > K.H + 20) continue;
+    for (let k = -1; k <= SEG; k++) { const idx = ((k % SEG) + SEG) % SEG, c = f.cells[idx]; if (c === 1) continue; const px = (((k + shift) % SEG) + SEG) % SEG * cw; x.fillStyle = c === 2 ? '#ff4d6d' : `hsl(${(f.y / GAP * 25) % 360},70%,55%)`; x.fillRect(px + 1, y, cw - 2, 14); if (px + cw > K.W) x.fillRect(px - K.W + 1, y, cw - 2, 14) }
+  }
+  for (const p of parts) { x.globalAlpha = Math.max(0, p.life); x.fillStyle = p.c; if (p.splat) { x.beginPath(); x.ellipse(p.x, p.y - cam, 18, 4, 0, 0, 7); x.fill() } else x.fillRect(p.x - 3, p.y - cam - 3, 6, 6) } x.globalAlpha = 1;
+  if (ball && run) { const sq = Math.max(.7, Math.min(1.2, 1 + ball.vy / 3000)); x.fillStyle = streak >= 3 ? '#3df5ff' : '#ffe35a'; x.shadowColor = x.fillStyle; x.shadowBlur = 16; x.beginPath(); x.ellipse(K.W / 2, ball.y - cam, 12 / sq, 12 * sq, 0, 0, 7); x.fill(); x.shadowBlur = 0 }
+  if (run && streak >= 3) { x.fillStyle = '#3df5ff'; x.font = '900 18px system-ui'; x.textAlign = 'center'; x.fillText('POWER! Smash through!', K.W / 2, 80) }
+});
+G.overlay('Tower Drop', 'The ball bounces in the middle. Drag left or right to slide the floors.<br>Line up the holes to drop through. Never land on red!<br>Fall through 3 floors in a row to power up and smash the next one.', 'Start', start);
+</script></body></html>

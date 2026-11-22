@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Tower of Hanoi</title><script>
+// Shared helpers for every arcade game
+const G = (() => {
+  const st = document.createElement('style');
+  st.textContent = `
+html,body{margin:0;height:100%;background:#0b0820;color:#fff;font-family:system-ui,-apple-system,sans-serif;overflow:hidden;
+  touch-action:none;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
+.hud{position:fixed;top:12px;left:0;right:0;display:flex;justify-content:space-between;padding:0 18px;font-weight:700;
+  letter-spacing:1px;z-index:5;pointer-events:none;color:#cfe8ff}
+.hud b{color:#fff;font-size:20px;text-shadow:0 0 10px #3df5ff}
+.ov{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  background:rgba(8,5,25,.85);z-index:10;text-align:center;padding:20px}
+.ov h1{margin:0 0 10px;font-size:clamp(30px,8vw,52px);background:linear-gradient(90deg,#3df5ff,#ff3df0);
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.ov p{opacity:.88;line-height:1.6;max-width:340px;margin:6px 0}
+.ov button{margin-top:18px;font:inherit;font-weight:800;font-size:18px;padding:13px 34px;border:0;border-radius:999px;
+  background:linear-gradient(90deg,#3df5ff,#ff3df0);color:#0b0820;cursor:pointer}
+`;
+  document.head.appendChild(st);
+
+  let ac;
+  function beep(f, d = .08, type = 'sine', v = .1) {
+    try {
+      ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.type = type; o.frequency.value = f;
+      g.gain.setValueAtTime(v, ac.currentTime);
+      g.gain.exponentialRampToValueAtTime(.001, ac.currentTime + d);
+      o.connect(g).connect(ac.destination); o.start(); o.stop(ac.currentTime + d);
+    } catch (e) {}
+  }
+  function getBest(k) { try { return +localStorage.getItem('arc_' + k) || 0 } catch (e) { return 0 } }
+  function setBest(k, v) { try { localStorage.setItem('arc_' + k, v) } catch (e) {} }
+  // Save if higher (or lower when lowerIsBetter). Returns current best.
+  function best(k, v, lowerIsBetter) {
+    const b = getBest(k);
+    if (v != null && (!b || (lowerIsBetter ? v < b : v > b))) { setBest(k, v); return v }
+    return b;
+  }
+  function set(id, v) { const e = document.getElementById(id); if (e) e.textContent = v }
+
+  function overlay(title, html, btn, cb) {
+    let o = document.querySelector('.ov');
+    if (!o) { o = document.createElement('div'); o.className = 'ov'; document.body.appendChild(o) }
+    o.innerHTML = `<h1>${title}</h1><p>${html}</p><button>${btn}</button>`;
+    o.style.display = 'flex';
+    o.addEventListener('pointerdown', e => e.stopPropagation());
+    o.querySelector('button').onclick = e => { e.stopPropagation(); o.style.display = 'none'; beep(440, .08, 'triangle'); cb() };
+  }
+
+  // Swipe (touch/mouse) + arrow keys / WASD → 'L','R','U','D'
+  function swipe(cb) {
+    let sx = null, sy = null;
+    addEventListener('pointerdown', e => { sx = e.clientX; sy = e.clientY });
+    addEventListener('pointerup', e => {
+      if (sx == null) return;
+      const dx = e.clientX - sx, dy = e.clientY - sy; sx = null;
+      if (Math.max(Math.abs(dx), Math.abs(dy)) < 20) return;
+      cb(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'R' : 'L') : (dy > 0 ? 'D' : 'U'));
+    });
+    addEventListener('keydown', e => {
+      const m = { ArrowLeft: 'L', ArrowRight: 'R', ArrowUp: 'U', ArrowDown: 'D', a: 'L', d: 'R', w: 'U', s: 'D' }[e.key];
+      if (m) { e.preventDefault(); cb(m) }
+    });
+  }
+
+  // Full-screen crisp canvas. Returns {c, x, W, H}; set .onresize to react.
+  function canvas() {
+    const c = document.createElement('canvas');
+    c.style.cssText = 'display:block;width:100vw;height:100vh';
+    document.body.prepend(c);
+    const o = { c, x: c.getContext('2d'), W: 0, H: 0 };
+    function r() {
+      const d = Math.min(devicePixelRatio || 1, 2);
+      o.W = innerWidth; o.H = innerHeight; c.width = o.W * d; c.height = o.H * d;
+      o.x.setTransform(d, 0, 0, d, 0, 0); o.onresize && o.onresize();
+    }
+    addEventListener('resize', r); r();
+    return o;
+  }
+
+  // Game loop with delta time (seconds, capped)
+  function loop(fn) {
+    let last = performance.now();
+    function f(t) { const dt = Math.min(.05, (t - last) / 1000); last = t; fn(dt); requestAnimationFrame(f) }
+    requestAnimationFrame(f);
+  }
+
+  return { beep, getBest, setBest, best, set, overlay, swipe, canvas, loop };
+})();
+
+</script>
+<style>#msg{position:fixed;left:0;right:0;bottom:70px;text-align:center;font-weight:700;color:#cfe8ff}
+#rs{position:fixed;right:12px;bottom:12px;z-index:20;font:inherit;font-weight:700;font-size:14px;color:#0b0820;background:#3df5ff;border:0;border-radius:999px;padding:8px 14px}</style></head><body>
+<div class="hud"><span>Disks <b id="s">3</b></span><span>Moves <b id="m">0</b></span><span>Best <b id="b">0</b></span></div>
+<div id="msg"></div><button id="rs">↺ Restart</button>
+<script>
+const K = G.canvas(), x = K.x;
+let pegs, n = 3, held = null, moves = 0, run = false, t = 0;
+G.set('b', G.best('hanoi'));
+const PW = () => K.W / 3, BASE = () => K.H * .72, DH = () => Math.min(26, K.H * .3 / 8);
+function make() { pegs = [[...Array(n)].map((_, i) => n - i), [], []]; held = null; moves = 0; run = true; G.set('s', n); G.set('m', 0); G.set('msg', 'Move all disks to the right peg. Best possible: ' + (2 ** n - 1) + ' moves') }
+document.getElementById('rs').onclick = () => make();
+addEventListener('pointerdown', e => {
+  if (!run || e.target.id === 'rs') return; const p = Math.min(2, Math.floor(e.clientX / PW()));
+  if (held === null) { if (pegs[p].length) { held = p; G.beep(500, .04, 'triangle') } return }
+  if (held === p) { held = null; return }
+  const d = pegs[held][pegs[held].length - 1], top = pegs[p][pegs[p].length - 1];
+  if (top && top < d) { G.beep(150, .15, 'sawtooth'); G.set('msg', 'A bigger disk can\'t go on a smaller one'); held = null; return }
+  pegs[p].push(pegs[held].pop()); held = null; moves++; G.set('m', moves); G.beep(350 + d * 50, .06, 'triangle');
+  if (pegs[2].length === n) {
+    run = false; const perfect = moves === 2 ** n - 1; G.set('b', G.best('hanoi', n)); G.beep(900, .3, 'triangle');
+    setTimeout(() => G.overlay(perfect ? 'Perfect! 🏆' : 'Solved! 🎉', n + ' disks in ' + moves + ' moves (best possible ' + (2 ** n - 1) + ').', n < 8 ? 'Next: ' + (n + 1) + ' disks' : 'Play again', () => { if (n < 8) n++; make() }), 500);
+  }
+});
+G.loop(dt => {
+  t += dt; x.fillStyle = '#0b0820'; x.fillRect(0, 0, K.W, K.H); if (!pegs) return;
+  const pw = PW(), base = BASE(), dh = DH(), maxW = pw * .9;
+  x.fillStyle = '#3a2a90'; x.fillRect(10, base, K.W - 20, 12);
+  for (let p = 0; p < 3; p++) {
+    const cx = (p + .5) * pw; x.fillStyle = p === 2 ? '#4dff88' : '#5a4ad0'; x.fillRect(cx - 4, base - dh * 9, 8, dh * 9);
+    pegs[p].forEach((d, i) => {
+      const lift = held === p && i === pegs[p].length - 1, w = maxW * (.25 + .75 * d / Math.max(n, 3)), y = lift ? base - dh * 10.5 + Math.sin(t * 6) * 4 : base - (i + 1) * dh;
+      const c = `hsl(${(d * 45 + 180) % 360},90%,60%)`; x.fillStyle = c; x.shadowColor = c; x.shadowBlur = lift ? 18 : 6;
+      x.beginPath(); x.roundRect ? x.roundRect(cx - w / 2, y + 1, w, dh - 2, 8) : x.rect(cx - w / 2, y + 1, w, dh - 2); x.fill(); x.shadowBlur = 0;
+    });
+  }
+});
+make();
+G.overlay('Tower of Hanoi', 'Move the whole tower to the green peg on the right.<br>Tap a peg to pick up its top disk, then tap another peg to drop it.<br>Never put a bigger disk on a smaller one.', 'Start', () => {});
+</script></body></html>

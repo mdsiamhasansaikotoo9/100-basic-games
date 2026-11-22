@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Tap Battle</title><script>
+// Shared helpers for every arcade game
+const G = (() => {
+  const st = document.createElement('style');
+  st.textContent = `
+html,body{margin:0;height:100%;background:#0b0820;color:#fff;font-family:system-ui,-apple-system,sans-serif;overflow:hidden;
+  touch-action:none;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
+.hud{position:fixed;top:12px;left:0;right:0;display:flex;justify-content:space-between;padding:0 18px;font-weight:700;
+  letter-spacing:1px;z-index:5;pointer-events:none;color:#cfe8ff}
+.hud b{color:#fff;font-size:20px;text-shadow:0 0 10px #3df5ff}
+.ov{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  background:rgba(8,5,25,.85);z-index:10;text-align:center;padding:20px}
+.ov h1{margin:0 0 10px;font-size:clamp(30px,8vw,52px);background:linear-gradient(90deg,#3df5ff,#ff3df0);
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.ov p{opacity:.88;line-height:1.6;max-width:340px;margin:6px 0}
+.ov button{margin-top:18px;font:inherit;font-weight:800;font-size:18px;padding:13px 34px;border:0;border-radius:999px;
+  background:linear-gradient(90deg,#3df5ff,#ff3df0);color:#0b0820;cursor:pointer}
+`;
+  document.head.appendChild(st);
+
+  let ac;
+  function beep(f, d = .08, type = 'sine', v = .1) {
+    try {
+      ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.type = type; o.frequency.value = f;
+      g.gain.setValueAtTime(v, ac.currentTime);
+      g.gain.exponentialRampToValueAtTime(.001, ac.currentTime + d);
+      o.connect(g).connect(ac.destination); o.start(); o.stop(ac.currentTime + d);
+    } catch (e) {}
+  }
+  function getBest(k) { try { return +localStorage.getItem('arc_' + k) || 0 } catch (e) { return 0 } }
+  function setBest(k, v) { try { localStorage.setItem('arc_' + k, v) } catch (e) {} }
+  // Save if higher (or lower when lowerIsBetter). Returns current best.
+  function best(k, v, lowerIsBetter) {
+    const b = getBest(k);
+    if (v != null && (!b || (lowerIsBetter ? v < b : v > b))) { setBest(k, v); return v }
+    return b;
+  }
+  function set(id, v) { const e = document.getElementById(id); if (e) e.textContent = v }
+
+  function overlay(title, html, btn, cb) {
+    let o = document.querySelector('.ov');
+    if (!o) { o = document.createElement('div'); o.className = 'ov'; document.body.appendChild(o) }
+    o.innerHTML = `<h1>${title}</h1><p>${html}</p><button>${btn}</button>`;
+    o.style.display = 'flex';
+    o.addEventListener('pointerdown', e => e.stopPropagation());
+    o.querySelector('button').onclick = e => { e.stopPropagation(); o.style.display = 'none'; beep(440, .08, 'triangle'); cb() };
+  }
+
+  // Swipe (touch/mouse) + arrow keys / WASD → 'L','R','U','D'
+  function swipe(cb) {
+    let sx = null, sy = null;
+    addEventListener('pointerdown', e => { sx = e.clientX; sy = e.clientY });
+    addEventListener('pointerup', e => {
+      if (sx == null) return;
+      const dx = e.clientX - sx, dy = e.clientY - sy; sx = null;
+      if (Math.max(Math.abs(dx), Math.abs(dy)) < 20) return;
+      cb(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'R' : 'L') : (dy > 0 ? 'D' : 'U'));
+    });
+    addEventListener('keydown', e => {
+      const m = { ArrowLeft: 'L', ArrowRight: 'R', ArrowUp: 'U', ArrowDown: 'D', a: 'L', d: 'R', w: 'U', s: 'D' }[e.key];
+      if (m) { e.preventDefault(); cb(m) }
+    });
+  }
+
+  // Full-screen crisp canvas. Returns {c, x, W, H}; set .onresize to react.
+  function canvas() {
+    const c = document.createElement('canvas');
+    c.style.cssText = 'display:block;width:100vw;height:100vh';
+    document.body.prepend(c);
+    const o = { c, x: c.getContext('2d'), W: 0, H: 0 };
+    function r() {
+      const d = Math.min(devicePixelRatio || 1, 2);
+      o.W = innerWidth; o.H = innerHeight; c.width = o.W * d; c.height = o.H * d;
+      o.x.setTransform(d, 0, 0, d, 0, 0); o.onresize && o.onresize();
+    }
+    addEventListener('resize', r); r();
+    return o;
+  }
+
+  // Game loop with delta time (seconds, capped)
+  function loop(fn) {
+    let last = performance.now();
+    function f(t) { const dt = Math.min(.05, (t - last) / 1000); last = t; fn(dt); requestAnimationFrame(f) }
+    requestAnimationFrame(f);
+  }
+
+  return { beep, getBest, setBest, best, set, overlay, swipe, canvas, loop };
+})();
+
+</script>
+<style>
+.half{position:fixed;left:0;right:0;height:50%;display:flex;align-items:center;justify-content:center;flex-direction:column;font-weight:900;user-select:none}
+#p2{top:0;background:#7a1060;transform:rotate(180deg)}#p1{bottom:0;background:#0a5a7a}
+.half .big{font-size:clamp(40px,14vw,80px)}.half .sm{font-size:16px;opacity:.85;margin-top:6px}
+#bar{position:fixed;left:0;right:0;height:10px;top:calc(50% - 5px);background:#0b0820;z-index:3}
+#knot{position:fixed;left:50%;top:50%;width:46px;height:46px;margin:-23px 0 0 -23px;border-radius:50%;background:#ffe35a;box-shadow:0 0 20px #ffe35a;z-index:4;display:flex;align-items:center;justify-content:center;font-size:24px}
+.hud{display:none}
+</style></head><body>
+<div class="half" id="p2"><div class="big" id="t2">TAP!</div><div class="sm">Player 2 · wins <span id="w2">0</span></div></div>
+<div class="half" id="p1"><div class="big" id="t1">TAP!</div><div class="sm">Player 1 · wins <span id="w1">0</span></div></div>
+<div id="bar"></div><div id="knot">⚡</div>
+<script>
+let pos = 0, state = 'idle', wins = [0, 0];
+const knot = document.getElementById('knot'), p1 = document.getElementById('p1'), p2 = document.getElementById('p2');
+function render() { knot.style.top = `calc(50% + ${pos * 45}%)`; p1.style.height = `calc(50% - ${pos * 45}%)`; p2.style.height = `calc(50% + ${pos * 45}%)` }
+async function countdown() { state = 'count'; pos = 0; render(); for (const n of ['3', '2', '1']) { G.set('t1', n); G.set('t2', n); G.beep(500, .1, 'triangle'); await new Promise(r => setTimeout(r, 700)) } G.set('t1', 'TAP!'); G.set('t2', 'TAP!'); G.beep(900, .15, 'triangle'); state = 'go' }
+function tap(who) {
+  if (state !== 'go') return; pos += who === 1 ? -.05 : .05; render(); G.beep(who === 1 ? 500 : 650, .02, 'square', .03);
+  if (Math.abs(pos) >= 1) {
+    state = 'done'; const w = pos <= -1 ? 1 : 2; wins[w - 1]++; G.set('w1', wins[0]); G.set('w2', wins[1]);
+    G.set('t' + w, 'YOU WIN! 🏆'); G.set('t' + (3 - w), 'You lose'); G.beep(1000, .4, 'triangle');
+    setTimeout(() => G.overlay('Player ' + w + ' wins!', 'Score: P1 ' + wins[0] + ' – ' + wins[1] + ' P2', 'Rematch', countdown), 1200);
+  }
+}
+p1.addEventListener('pointerdown', e => { e.preventDefault(); tap(1) }); p2.addEventListener('pointerdown', e => { e.preventDefault(); tap(2) });
+addEventListener('keydown', e => { if (e.key === 'a') tap(1); if (e.key === 'l') tap(2) });
+render();
+G.overlay('Tap Battle', 'A game for 2 players on one phone!<br>Hold the phone flat between you. Each player taps their own half as fast as they can.<br>Push the ⚡ all the way to the other side to win. (Keyboard: A vs L)', 'Start', countdown);
+</script></body></html>

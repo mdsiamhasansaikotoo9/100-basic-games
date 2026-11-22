@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Dot Muncher</title><script>
+// Shared helpers for every arcade game
+const G = (() => {
+  const st = document.createElement('style');
+  st.textContent = `
+html,body{margin:0;height:100%;background:#0b0820;color:#fff;font-family:system-ui,-apple-system,sans-serif;overflow:hidden;
+  touch-action:none;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
+.hud{position:fixed;top:12px;left:0;right:0;display:flex;justify-content:space-between;padding:0 18px;font-weight:700;
+  letter-spacing:1px;z-index:5;pointer-events:none;color:#cfe8ff}
+.hud b{color:#fff;font-size:20px;text-shadow:0 0 10px #3df5ff}
+.ov{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  background:rgba(8,5,25,.85);z-index:10;text-align:center;padding:20px}
+.ov h1{margin:0 0 10px;font-size:clamp(30px,8vw,52px);background:linear-gradient(90deg,#3df5ff,#ff3df0);
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.ov p{opacity:.88;line-height:1.6;max-width:340px;margin:6px 0}
+.ov button{margin-top:18px;font:inherit;font-weight:800;font-size:18px;padding:13px 34px;border:0;border-radius:999px;
+  background:linear-gradient(90deg,#3df5ff,#ff3df0);color:#0b0820;cursor:pointer}
+`;
+  document.head.appendChild(st);
+
+  let ac;
+  function beep(f, d = .08, type = 'sine', v = .1) {
+    try {
+      ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.type = type; o.frequency.value = f;
+      g.gain.setValueAtTime(v, ac.currentTime);
+      g.gain.exponentialRampToValueAtTime(.001, ac.currentTime + d);
+      o.connect(g).connect(ac.destination); o.start(); o.stop(ac.currentTime + d);
+    } catch (e) {}
+  }
+  function getBest(k) { try { return +localStorage.getItem('arc_' + k) || 0 } catch (e) { return 0 } }
+  function setBest(k, v) { try { localStorage.setItem('arc_' + k, v) } catch (e) {} }
+  // Save if higher (or lower when lowerIsBetter). Returns current best.
+  function best(k, v, lowerIsBetter) {
+    const b = getBest(k);
+    if (v != null && (!b || (lowerIsBetter ? v < b : v > b))) { setBest(k, v); return v }
+    return b;
+  }
+  function set(id, v) { const e = document.getElementById(id); if (e) e.textContent = v }
+
+  function overlay(title, html, btn, cb) {
+    let o = document.querySelector('.ov');
+    if (!o) { o = document.createElement('div'); o.className = 'ov'; document.body.appendChild(o) }
+    o.innerHTML = `<h1>${title}</h1><p>${html}</p><button>${btn}</button>`;
+    o.style.display = 'flex';
+    o.addEventListener('pointerdown', e => e.stopPropagation());
+    o.querySelector('button').onclick = e => { e.stopPropagation(); o.style.display = 'none'; beep(440, .08, 'triangle'); cb() };
+  }
+
+  // Swipe (touch/mouse) + arrow keys / WASD → 'L','R','U','D'
+  function swipe(cb) {
+    let sx = null, sy = null;
+    addEventListener('pointerdown', e => { sx = e.clientX; sy = e.clientY });
+    addEventListener('pointerup', e => {
+      if (sx == null) return;
+      const dx = e.clientX - sx, dy = e.clientY - sy; sx = null;
+      if (Math.max(Math.abs(dx), Math.abs(dy)) < 20) return;
+      cb(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'R' : 'L') : (dy > 0 ? 'D' : 'U'));
+    });
+    addEventListener('keydown', e => {
+      const m = { ArrowLeft: 'L', ArrowRight: 'R', ArrowUp: 'U', ArrowDown: 'D', a: 'L', d: 'R', w: 'U', s: 'D' }[e.key];
+      if (m) { e.preventDefault(); cb(m) }
+    });
+  }
+
+  // Full-screen crisp canvas. Returns {c, x, W, H}; set .onresize to react.
+  function canvas() {
+    const c = document.createElement('canvas');
+    c.style.cssText = 'display:block;width:100vw;height:100vh';
+    document.body.prepend(c);
+    const o = { c, x: c.getContext('2d'), W: 0, H: 0 };
+    function r() {
+      const d = Math.min(devicePixelRatio || 1, 2);
+      o.W = innerWidth; o.H = innerHeight; c.width = o.W * d; c.height = o.H * d;
+      o.x.setTransform(d, 0, 0, d, 0, 0); o.onresize && o.onresize();
+    }
+    addEventListener('resize', r); r();
+    return o;
+  }
+
+  // Game loop with delta time (seconds, capped)
+  function loop(fn) {
+    let last = performance.now();
+    function f(t) { const dt = Math.min(.05, (t - last) / 1000); last = t; fn(dt); requestAnimationFrame(f) }
+    requestAnimationFrame(f);
+  }
+
+  return { beep, getBest, setBest, best, set, overlay, swipe, canvas, loop };
+})();
+
+</script></head><body>
+<div class="hud"><span>Score <b id="s">0</b></span><span id="l">💛💛💛</span><span>Best <b id="b">0</b></span></div>
+<script>
+const K = G.canvas(), x = K.x, CW = 7, CH = 8, MW = CW * 2 + 1, MH = CH * 2 + 1;
+const DIRS = { U: [0, -1], D: [0, 1], L: [-1, 0], R: [1, 0] }, OPP = { U: 'D', D: 'U', L: 'R', R: 'L' };
+let map, pac, ghosts, score = 0, lives = 3, level = 1, run = false, power = 0, cell, ox, oy, left, t = 0, pause = 0;
+G.set('b', G.best('muncher'));
+K.onresize = () => { cell = Math.floor(Math.min((K.W - 10) / MW, (K.H - 120) / MH)); ox = (K.W - cell * MW) / 2; oy = (K.H - cell * MH) / 2 + 10 }; K.onresize();
+function genMap() {
+  map = [...Array(MH)].map(() => Array(MW).fill('#'));
+  const seen = new Set(), st = [[0, 0]]; seen.add('0,0'); map[1][1] = '.';
+  while (st.length) {
+    const [cx, cy] = st[st.length - 1]; const o = [[1, 0], [-1, 0], [0, 1], [0, -1]].filter(([dx, dy]) => { const nx = cx + dx, ny = cy + dy; return nx >= 0 && ny >= 0 && nx < CW && ny < CH && !seen.has(nx + ',' + ny) });
+    if (!o.length) { st.pop(); continue }
+    const [dx, dy] = o[Math.random() * o.length | 0], nx = cx + dx, ny = cy + dy;
+    map[cy * 2 + 1 + dy][cx * 2 + 1 + dx] = '.'; map[ny * 2 + 1][nx * 2 + 1] = '.'; seen.add(nx + ',' + ny); st.push([nx, ny]);
+  }
+  // remove dead ends and add extra loops
+  for (let cy = 0; cy < CH; cy++) for (let cx = 0; cx < CW; cx++) {
+    const X = cx * 2 + 1, Y = cy * 2 + 1, open = [[1, 0], [-1, 0], [0, 1], [0, -1]].filter(([dx, dy]) => map[Y + dy][X + dx] === '.');
+    if (open.length <= 1 || Math.random() < .15) { const c = [[1, 0], [-1, 0], [0, 1], [0, -1]].filter(([dx, dy]) => map[Y + dy][X + dx] === '#' && X + dx * 2 > 0 && Y + dy * 2 > 0 && X + dx * 2 < MW - 1 && Y + dy * 2 < MH - 1); if (c.length) { const [dx, dy] = c[Math.random() * c.length | 0]; map[Y + dy][X + dx] = '.' } }
+  }
+  for (const [px, py] of [[1, 1], [MW - 2, 1], [1, MH - 2], [MW - 2, MH - 2]]) map[py][px] = 'o';
+  left = map.flat().filter(c => c === '.' || c === 'o').length;
+}
+const free = (X, Y) => map[Y] && map[Y][X] !== undefined && map[Y][X] !== '#';
+function place() {
+  pac = { x: 7, y: MH - 2, dir: 'L', want: 'L', p: 0 }; if (map[pac.y][pac.x] === '.') { map[pac.y][pac.x] = ' '; left-- }
+  ghosts = ['#ff4d6d', '#ff8a3d', '#3df5ff', '#ff3df0'].slice(0, Math.min(2 + level, 4)).map((c, i) => ({ x: 7, y: 7 + (i % 2 ? 2 : 0), dir: 'U', p: 0, c, home: [7, 7], dead: 0 }));
+  ghosts.forEach(g => { if (!free(g.x, g.y)) { g.y = 7; g.x = 7; map[7][7] = map[7][7] === '#' ? ' ' : map[7][7] } });
+  power = 0; pause = 1;
+}
+function start() { score = 0; lives = 3; level = 1; G.set('s', 0); G.set('l', '💛💛💛'); genMap(); place(); run = true }
+G.swipe(d => { if (pac) pac.want = d });
+function step(e, sp, dt, choose) {
+  if (e === pac && e.p > 0 && e.want === OPP[e.dir]) { const [dx, dy] = DIRS[e.dir]; e.x += dx; e.y += dy; e.p = 1 - e.p; e.dir = e.want }
+  if (e.p === 0) { choose(e); const [nx, ny] = DIRS[e.dir]; if (!free(e.x + nx, e.y + ny)) return }
+  e.p += sp * dt;
+  while (e.p >= 1) {
+    e.p -= 1; const [dx, dy] = DIRS[e.dir]; e.x += dx; e.y += dy;
+    choose(e);
+    const [nx, ny] = DIRS[e.dir]; if (!free(e.x + nx, e.y + ny)) { e.p = 0; break }
+  }
+}
+function pacChoose(e) {
+  const eat = map[e.y][e.x]; if (eat === '.' || eat === 'o') { map[e.y][e.x] = ' '; left--; score += eat === 'o' ? 50 : 10; G.set('s', score); if (eat === 'o') { power = 7; G.beep(300, .3, 'square', .06) } else if ((left & 1)) G.beep(700, .03, 'square', .03) }
+  const [wx, wy] = DIRS[e.want]; if (free(e.x + wx, e.y + wy)) e.dir = e.want;
+}
+function ghostChoose(g) {
+  const opts = Object.keys(DIRS).filter(d => d !== OPP[g.dir] && free(g.x + DIRS[d][0], g.y + DIRS[d][1]));
+  if (!opts.length) { g.dir = OPP[g.dir]; return }
+  const chase = Math.random() < .55 + level * .05, flee = power > 0;
+  const dist = d => Math.hypot(g.x + DIRS[d][0] - pac.x, g.y + DIRS[d][1] - pac.y);
+  if (chase) opts.sort((a, b) => flee ? dist(b) - dist(a) : dist(a) - dist(b)); else opts.sort(() => Math.random() - .5);
+  g.dir = opts[0];
+}
+const pos = e => { const [dx, dy] = DIRS[e.dir]; return [e.x + dx * e.p, e.y + dy * e.p] };
+G.loop(dt => {
+  t += dt;
+  if (run) {
+    if (pause > 0) pause -= dt;
+    else {
+      power = Math.max(0, power - dt);
+      step(pac, 5.5, dt, pacChoose);
+      for (const g of ghosts) step(g, (power ? 3 : 4 + level * .4), dt, ghostChoose);
+      const [px, py] = pos(pac);
+      for (const g of ghosts) {
+        const [gx, gy] = pos(g); if (Math.hypot(gx - px, gy - py) > .7) continue;
+        if (power) { score += 200; G.set('s', score); G.beep(1000, .15, 'triangle'); g.x = 7; g.y = 7; g.p = 0 }
+        else {
+          lives--; G.set('l', '💛'.repeat(Math.max(0, lives)) + '🖤'.repeat(3 - Math.max(0, lives))); G.beep(120, .5, 'sawtooth');
+          if (lives <= 0) { run = false; G.set('b', G.best('muncher', score)); G.overlay('Game Over', 'Score: ' + score + ' · Level ' + level, 'Play again', start) } else place();
+          break;
+        }
+      }
+      if (run && left <= 0) { level++; G.beep(900, .4, 'triangle'); genMap(); place() }
+    }
+  }
+  x.fillStyle = '#05030f'; x.fillRect(0, 0, K.W, K.H); if (!map) return;
+  for (let Y = 0; Y < MH; Y++) for (let X = 0; X < MW; X++) {
+    const c = map[Y][X], px = ox + X * cell, py = oy + Y * cell;
+    if (c === '#') { x.fillStyle = '#2a1a8a'; x.fillRect(px + 1, py + 1, cell - 2, cell - 2) }
+    else if (c === '.') { x.fillStyle = '#ffd9a0'; x.fillRect(px + cell / 2 - 2, py + cell / 2 - 2, 4, 4) }
+    else if (c === 'o') { x.fillStyle = '#ffe35a'; x.beginPath(); x.arc(px + cell / 2, py + cell / 2, cell * .28 + Math.sin(t * 8) * 1.5, 0, 7); x.fill() }
+  }
+  if (!pac) return;
+  const [px, py] = pos(pac), mouth = Math.abs(Math.sin(t * 12)) * .7, rot = { R: 0, D: Math.PI / 2, L: Math.PI, U: -Math.PI / 2 }[pac.dir];
+  x.fillStyle = '#ffe35a'; x.beginPath(); x.moveTo(ox + (px + .5) * cell, oy + (py + .5) * cell); x.arc(ox + (px + .5) * cell, oy + (py + .5) * cell, cell * .45, rot + mouth / 2, rot + Math.PI * 2 - mouth / 2); x.fill();
+  for (const g of ghosts) {
+    const [gx, gy] = pos(g), cx = ox + (gx + .5) * cell, cy = oy + (gy + .5) * cell, r = cell * .45;
+    x.fillStyle = power ? (power < 2 && (t * 6 | 0) % 2 ? '#fff' : '#3d5bff') : g.c;
+    x.beginPath(); x.arc(cx, cy - r * .1, r, Math.PI, 0); x.lineTo(cx + r, cy + r); for (let i = 0; i < 3; i++) x.lineTo(cx + r - (i + .5) * r * 2 / 3, cy + r * (i % 2 ? 1 : .6)); x.lineTo(cx - r, cy + r); x.fill();
+    x.fillStyle = '#fff'; x.beginPath(); x.arc(cx - r * .35, cy - r * .2, r * .25, 0, 7); x.arc(cx + r * .35, cy - r * .2, r * .25, 0, 7); x.fill();
+  }
+});
+G.overlay('Dot Muncher', 'Swipe (or arrow keys) to steer through the maze.<br>Eat every dot. Avoid the ghosts!<br>Big yellow dots let you eat ghosts for a short time.', 'Start', start);
+</script></body></html>

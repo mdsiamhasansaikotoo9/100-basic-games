@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Mini Golf</title><script>
+// Shared helpers for every arcade game
+const G = (() => {
+  const st = document.createElement('style');
+  st.textContent = `
+html,body{margin:0;height:100%;background:#0b0820;color:#fff;font-family:system-ui,-apple-system,sans-serif;overflow:hidden;
+  touch-action:none;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
+.hud{position:fixed;top:12px;left:0;right:0;display:flex;justify-content:space-between;padding:0 18px;font-weight:700;
+  letter-spacing:1px;z-index:5;pointer-events:none;color:#cfe8ff}
+.hud b{color:#fff;font-size:20px;text-shadow:0 0 10px #3df5ff}
+.ov{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  background:rgba(8,5,25,.85);z-index:10;text-align:center;padding:20px}
+.ov h1{margin:0 0 10px;font-size:clamp(30px,8vw,52px);background:linear-gradient(90deg,#3df5ff,#ff3df0);
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.ov p{opacity:.88;line-height:1.6;max-width:340px;margin:6px 0}
+.ov button{margin-top:18px;font:inherit;font-weight:800;font-size:18px;padding:13px 34px;border:0;border-radius:999px;
+  background:linear-gradient(90deg,#3df5ff,#ff3df0);color:#0b0820;cursor:pointer}
+`;
+  document.head.appendChild(st);
+
+  let ac;
+  function beep(f, d = .08, type = 'sine', v = .1) {
+    try {
+      ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.type = type; o.frequency.value = f;
+      g.gain.setValueAtTime(v, ac.currentTime);
+      g.gain.exponentialRampToValueAtTime(.001, ac.currentTime + d);
+      o.connect(g).connect(ac.destination); o.start(); o.stop(ac.currentTime + d);
+    } catch (e) {}
+  }
+  function getBest(k) { try { return +localStorage.getItem('arc_' + k) || 0 } catch (e) { return 0 } }
+  function setBest(k, v) { try { localStorage.setItem('arc_' + k, v) } catch (e) {} }
+  // Save if higher (or lower when lowerIsBetter). Returns current best.
+  function best(k, v, lowerIsBetter) {
+    const b = getBest(k);
+    if (v != null && (!b || (lowerIsBetter ? v < b : v > b))) { setBest(k, v); return v }
+    return b;
+  }
+  function set(id, v) { const e = document.getElementById(id); if (e) e.textContent = v }
+
+  function overlay(title, html, btn, cb) {
+    let o = document.querySelector('.ov');
+    if (!o) { o = document.createElement('div'); o.className = 'ov'; document.body.appendChild(o) }
+    o.innerHTML = `<h1>${title}</h1><p>${html}</p><button>${btn}</button>`;
+    o.style.display = 'flex';
+    o.addEventListener('pointerdown', e => e.stopPropagation());
+    o.querySelector('button').onclick = e => { e.stopPropagation(); o.style.display = 'none'; beep(440, .08, 'triangle'); cb() };
+  }
+
+  // Swipe (touch/mouse) + arrow keys / WASD → 'L','R','U','D'
+  function swipe(cb) {
+    let sx = null, sy = null;
+    addEventListener('pointerdown', e => { sx = e.clientX; sy = e.clientY });
+    addEventListener('pointerup', e => {
+      if (sx == null) return;
+      const dx = e.clientX - sx, dy = e.clientY - sy; sx = null;
+      if (Math.max(Math.abs(dx), Math.abs(dy)) < 20) return;
+      cb(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'R' : 'L') : (dy > 0 ? 'D' : 'U'));
+    });
+    addEventListener('keydown', e => {
+      const m = { ArrowLeft: 'L', ArrowRight: 'R', ArrowUp: 'U', ArrowDown: 'D', a: 'L', d: 'R', w: 'U', s: 'D' }[e.key];
+      if (m) { e.preventDefault(); cb(m) }
+    });
+  }
+
+  // Full-screen crisp canvas. Returns {c, x, W, H}; set .onresize to react.
+  function canvas() {
+    const c = document.createElement('canvas');
+    c.style.cssText = 'display:block;width:100vw;height:100vh';
+    document.body.prepend(c);
+    const o = { c, x: c.getContext('2d'), W: 0, H: 0 };
+    function r() {
+      const d = Math.min(devicePixelRatio || 1, 2);
+      o.W = innerWidth; o.H = innerHeight; c.width = o.W * d; c.height = o.H * d;
+      o.x.setTransform(d, 0, 0, d, 0, 0); o.onresize && o.onresize();
+    }
+    addEventListener('resize', r); r();
+    return o;
+  }
+
+  // Game loop with delta time (seconds, capped)
+  function loop(fn) {
+    let last = performance.now();
+    function f(t) { const dt = Math.min(.05, (t - last) / 1000); last = t; fn(dt); requestAnimationFrame(f) }
+    requestAnimationFrame(f);
+  }
+
+  return { beep, getBest, setBest, best, set, overlay, swipe, canvas, loop };
+})();
+
+</script></head><body>
+<div class="hud"><span>Hole <b id="h">1</b>/9</span><span>Strokes <b id="s">0</b></span><span>Best <b id="b">–</b></span></div>
+<script>
+const K = G.canvas(), x = K.x, HOLES = 9;
+let hole = 1, strokes = 0, total = 0, ball, cup, walls, drag = null, run = false, sinking = 0, course;
+const showBest = () => G.set('b', G.best('golf', null, true) || '–'); showBest();
+function makeCourse() {
+  const m = 16, top = 56, bot = K.H - 60; course = { x: m, y: top, w: K.W - m * 2, h: bot - top };
+  ball = { x: K.W / 2 + (Math.random() - .5) * course.w * .4, y: bot - 50, vx: 0, vy: 0, r: 9 };
+  cup = { x: m + 40 + Math.random() * (course.w - 80), y: top + 60, r: 15 };
+  walls = [];
+  const n = Math.min(1 + (hole / 2 | 0), 4);
+  for (let i = 0; i < n; i++) {
+    const w = course.w * (.3 + Math.random() * .35), y = top + 130 + (i + .5) * (course.h - 260) / n;
+    const left = Math.random() < .5; walls.push({ x: left ? m : m + course.w - w, y: y - 8, w, h: 16 });
+  }
+  if (hole > 5) walls.push({ x: K.W / 2 - 8, y: top + course.h * .35, w: 16, h: course.h * .25 });
+  strokes = 0; sinking = 0; G.set('h', hole); G.set('s', 0);
+}
+function start() { hole = 1; total = 0; run = true; makeCourse() }
+const moving = () => Math.hypot(ball.vx, ball.vy) > 4;
+addEventListener('pointerdown', e => { if (run && !moving() && !sinking) drag = { x: e.clientX, y: e.clientY, cx: e.clientX, cy: e.clientY } });
+addEventListener('pointermove', e => { if (drag) { drag.cx = e.clientX; drag.cy = e.clientY } });
+addEventListener('pointerup', () => {
+  if (!drag) return;
+  let dx = drag.x - drag.cx, dy = drag.y - drag.cy; const d = Math.hypot(dx, dy); drag = null;
+  if (d < 10) return;
+  const pw = Math.min(d, 160) * 6.5; ball.vx = dx / d * pw; ball.vy = dy / d * pw; strokes++; G.set('s', strokes); G.beep(260, .06, 'triangle');
+});
+function collide(w) {
+  const px = Math.max(w.x, Math.min(ball.x, w.x + w.w)), py = Math.max(w.y, Math.min(ball.y, w.y + w.h));
+  const dx = ball.x - px, dy = ball.y - py, d = Math.hypot(dx, dy);
+  if (d < ball.r && d > 0) {
+    const nx = dx / d, ny = dy / d; ball.x = px + nx * ball.r; ball.y = py + ny * ball.r;
+    const dot = ball.vx * nx + ball.vy * ny; if (dot < 0) { ball.vx -= 2 * dot * nx * .85; ball.vy -= 2 * dot * ny * .85; G.beep(180, .03, 'square', .04) }
+  }
+}
+G.loop(dt => {
+  if (run && !sinking) {
+    for (let k = 0; k < 4; k++) {
+      const st = dt / 4; ball.x += ball.vx * st; ball.y += ball.vy * st;
+      const c = course;
+      if (ball.x < c.x + ball.r) { ball.x = c.x + ball.r; ball.vx = Math.abs(ball.vx) * .85 }
+      if (ball.x > c.x + c.w - ball.r) { ball.x = c.x + c.w - ball.r; ball.vx = -Math.abs(ball.vx) * .85 }
+      if (ball.y < c.y + ball.r) { ball.y = c.y + ball.r; ball.vy = Math.abs(ball.vy) * .85 }
+      if (ball.y > c.y + c.h - ball.r) { ball.y = c.y + c.h - ball.r; ball.vy = -Math.abs(ball.vy) * .85 }
+      walls.forEach(collide);
+    }
+    const f = Math.pow(.32, dt); ball.vx *= f; ball.vy *= f;
+    if (!moving()) { ball.vx = ball.vy = 0 }
+    const dc = Math.hypot(ball.x - cup.x, ball.y - cup.y), sp = Math.hypot(ball.vx, ball.vy);
+    if (dc < cup.r && sp < 520) { sinking = 1; G.beep(700, .1, 'triangle'); setTimeout(() => G.beep(1000, .2, 'triangle'), 120) }
+    else if (dc < cup.r * 2.2 && sp < 300) { ball.vx += (cup.x - ball.x) * dt * 4; ball.vy += (cup.y - ball.y) * dt * 4 }
+  }
+  if (sinking) {
+    sinking += dt; ball.x += (cup.x - ball.x) * .2; ball.y += (cup.y - ball.y) * .2;
+    if (sinking > .9) {
+      sinking = 0; total += strokes;
+      if (hole >= HOLES) { run = false; G.best('golf', total, true); showBest(); G.overlay('Round done! ⛳', 'Total strokes: ' + total + ' (par 18)<br>Fewer is better.', 'Play again', start) }
+      else { hole++; makeCourse() }
+    }
+  }
+  // draw
+  x.fillStyle = '#0b0820'; x.fillRect(0, 0, K.W, K.H);
+  if (!course) return;
+  const c = course; x.fillStyle = '#126b3a'; x.fillRect(c.x, c.y, c.w, c.h);
+  x.fillStyle = 'rgba(255,255,255,.04)'; for (let i = 0; i < c.h; i += 40) x.fillRect(c.x, c.y + i, c.w, 20);
+  x.strokeStyle = '#4dff88'; x.lineWidth = 3; x.shadowColor = '#4dff88'; x.shadowBlur = 10; x.strokeRect(c.x, c.y, c.w, c.h); x.shadowBlur = 0;
+  x.fillStyle = '#05140b'; x.beginPath(); x.arc(cup.x, cup.y, cup.r, 0, 7); x.fill();
+  x.strokeStyle = '#fff'; x.lineWidth = 2; x.beginPath(); x.moveTo(cup.x, cup.y); x.lineTo(cup.x, cup.y - 40); x.stroke();
+  x.fillStyle = '#ff4d6d'; x.beginPath(); x.moveTo(cup.x, cup.y - 40); x.lineTo(cup.x + 20, cup.y - 33); x.lineTo(cup.x, cup.y - 26); x.fill();
+  x.fillStyle = '#b44dff'; x.shadowColor = '#b44dff'; x.shadowBlur = 10; for (const w of walls) x.fillRect(w.x, w.y, w.w, w.h); x.shadowBlur = 0;
+  if (drag) {
+    const dx = drag.x - drag.cx, dy = drag.y - drag.cy, d = Math.min(Math.hypot(dx, dy), 160);
+    if (d > 10) {
+      const nx = dx / Math.hypot(dx, dy), ny = dy / Math.hypot(dx, dy);
+      x.strokeStyle = `hsl(${120 - d * .75},100%,60%)`; x.lineWidth = 4; x.setLineDash([8, 8]);
+      x.beginPath(); x.moveTo(ball.x, ball.y); x.lineTo(ball.x + nx * d * 1.2, ball.y + ny * d * 1.2); x.stroke(); x.setLineDash([]);
+    }
+  }
+  const sc = sinking ? Math.max(0, 1 - sinking) : 1;
+  x.fillStyle = '#fff'; x.shadowColor = '#fff'; x.shadowBlur = 10; x.beginPath(); x.arc(ball.x, ball.y, ball.r * sc, 0, 7); x.fill(); x.shadowBlur = 0;
+});
+G.overlay('Mini Golf', 'Touch anywhere and pull back, like a slingshot.<br>Let go to hit the ball. Longer pull = harder hit.<br>9 holes. Fewest strokes wins.', 'Start', start);
+</script></body></html>

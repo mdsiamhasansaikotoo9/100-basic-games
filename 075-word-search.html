@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Word Search</title><script>
+// Shared helpers for every arcade game
+const G = (() => {
+  const st = document.createElement('style');
+  st.textContent = `
+html,body{margin:0;height:100%;background:#0b0820;color:#fff;font-family:system-ui,-apple-system,sans-serif;overflow:hidden;
+  touch-action:none;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
+.hud{position:fixed;top:12px;left:0;right:0;display:flex;justify-content:space-between;padding:0 18px;font-weight:700;
+  letter-spacing:1px;z-index:5;pointer-events:none;color:#cfe8ff}
+.hud b{color:#fff;font-size:20px;text-shadow:0 0 10px #3df5ff}
+.ov{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  background:rgba(8,5,25,.85);z-index:10;text-align:center;padding:20px}
+.ov h1{margin:0 0 10px;font-size:clamp(30px,8vw,52px);background:linear-gradient(90deg,#3df5ff,#ff3df0);
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.ov p{opacity:.88;line-height:1.6;max-width:340px;margin:6px 0}
+.ov button{margin-top:18px;font:inherit;font-weight:800;font-size:18px;padding:13px 34px;border:0;border-radius:999px;
+  background:linear-gradient(90deg,#3df5ff,#ff3df0);color:#0b0820;cursor:pointer}
+`;
+  document.head.appendChild(st);
+
+  let ac;
+  function beep(f, d = .08, type = 'sine', v = .1) {
+    try {
+      ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.type = type; o.frequency.value = f;
+      g.gain.setValueAtTime(v, ac.currentTime);
+      g.gain.exponentialRampToValueAtTime(.001, ac.currentTime + d);
+      o.connect(g).connect(ac.destination); o.start(); o.stop(ac.currentTime + d);
+    } catch (e) {}
+  }
+  function getBest(k) { try { return +localStorage.getItem('arc_' + k) || 0 } catch (e) { return 0 } }
+  function setBest(k, v) { try { localStorage.setItem('arc_' + k, v) } catch (e) {} }
+  // Save if higher (or lower when lowerIsBetter). Returns current best.
+  function best(k, v, lowerIsBetter) {
+    const b = getBest(k);
+    if (v != null && (!b || (lowerIsBetter ? v < b : v > b))) { setBest(k, v); return v }
+    return b;
+  }
+  function set(id, v) { const e = document.getElementById(id); if (e) e.textContent = v }
+
+  function overlay(title, html, btn, cb) {
+    let o = document.querySelector('.ov');
+    if (!o) { o = document.createElement('div'); o.className = 'ov'; document.body.appendChild(o) }
+    o.innerHTML = `<h1>${title}</h1><p>${html}</p><button>${btn}</button>`;
+    o.style.display = 'flex';
+    o.addEventListener('pointerdown', e => e.stopPropagation());
+    o.querySelector('button').onclick = e => { e.stopPropagation(); o.style.display = 'none'; beep(440, .08, 'triangle'); cb() };
+  }
+
+  // Swipe (touch/mouse) + arrow keys / WASD → 'L','R','U','D'
+  function swipe(cb) {
+    let sx = null, sy = null;
+    addEventListener('pointerdown', e => { sx = e.clientX; sy = e.clientY });
+    addEventListener('pointerup', e => {
+      if (sx == null) return;
+      const dx = e.clientX - sx, dy = e.clientY - sy; sx = null;
+      if (Math.max(Math.abs(dx), Math.abs(dy)) < 20) return;
+      cb(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'R' : 'L') : (dy > 0 ? 'D' : 'U'));
+    });
+    addEventListener('keydown', e => {
+      const m = { ArrowLeft: 'L', ArrowRight: 'R', ArrowUp: 'U', ArrowDown: 'D', a: 'L', d: 'R', w: 'U', s: 'D' }[e.key];
+      if (m) { e.preventDefault(); cb(m) }
+    });
+  }
+
+  // Full-screen crisp canvas. Returns {c, x, W, H}; set .onresize to react.
+  function canvas() {
+    const c = document.createElement('canvas');
+    c.style.cssText = 'display:block;width:100vw;height:100vh';
+    document.body.prepend(c);
+    const o = { c, x: c.getContext('2d'), W: 0, H: 0 };
+    function r() {
+      const d = Math.min(devicePixelRatio || 1, 2);
+      o.W = innerWidth; o.H = innerHeight; c.width = o.W * d; c.height = o.H * d;
+      o.x.setTransform(d, 0, 0, d, 0, 0); o.onresize && o.onresize();
+    }
+    addEventListener('resize', r); r();
+    return o;
+  }
+
+  // Game loop with delta time (seconds, capped)
+  function loop(fn) {
+    let last = performance.now();
+    function f(t) { const dt = Math.min(.05, (t - last) / 1000); last = t; fn(dt); requestAnimationFrame(f) }
+    requestAnimationFrame(f);
+  }
+
+  return { beep, getBest, setBest, best, set, overlay, swipe, canvas, loop };
+})();
+
+</script>
+<style>#list{position:fixed;left:0;right:0;bottom:56px;display:flex;flex-wrap:wrap;justify-content:center;gap:6px 12px;padding:0 10px;font-weight:800;letter-spacing:1px;color:#cfe8ff}
+#list span.got{color:#4a4a6a;text-decoration:line-through}</style></head><body>
+<div class="hud"><span>Time <b id="t">0</b></span><span>Found <b id="f">0</b>/6</span><span>Best <b id="b">–</b></span></div>
+<div id="list"></div>
+<script>
+const K = G.canvas(), x = K.x, N = 10;
+const BANK = ['APPLE', 'TIGER', 'RIVER', 'CLOUD', 'MANGO', 'PIANO', 'ROBOT', 'OCEAN', 'LEMON', 'HORSE', 'PLANET', 'GARDEN', 'ORANGE', 'ROCKET', 'PENCIL', 'CANDLE', 'TURTLE', 'WINTER', 'SUMMER', 'BRIDGE', 'CASTLE', 'DRAGON', 'JUNGLE', 'BANANA', 'SPIDER', 'GUITAR', 'MONKEY', 'COFFEE', 'FOREST', 'ISLAND', 'STAR', 'MOON', 'FISH', 'KITE', 'RAIN', 'SNOW', 'LION', 'BOOK', 'TREE', 'CAKE'];
+let grid, words, placed, found, sel = null, time = 0, run = false, cell, ox, oy, colors = ['#3df5ff', '#ff3df0', '#4dff88', '#ffe35a', '#ff8a3d', '#b44dff'];
+const showBest = () => { const b = G.best('wordsearch', null, true); G.set('b', b ? b + 's' : '–') }; showBest();
+K.onresize = () => { cell = Math.floor(Math.min(K.W - 16, K.H - 210) / N); ox = (K.W - cell * N) / 2; oy = 60 }; K.onresize();
+const DIRS = [[0, 1], [1, 0], [1, 1], [-1, 1], [0, -1], [-1, 0], [-1, -1], [1, -1]];
+function make() {
+  for (let attempt = 0; attempt < 50; attempt++) {
+    grid = [...Array(N)].map(() => Array(N).fill('')); placed = []; const pool = BANK.slice().sort(() => Math.random() - .5); words = [];
+    for (const w of pool) {
+      if (words.length === 6) break; let ok = false;
+      for (let tries = 0; tries < 80 && !ok; tries++) {
+        const [dr, dc] = DIRS[Math.random() * DIRS.length | 0], r = Math.random() * N | 0, c = Math.random() * N | 0, er = r + dr * (w.length - 1), ec = c + dc * (w.length - 1);
+        if (er < 0 || er >= N || ec < 0 || ec >= N) continue;
+        let fits = true; for (let k = 0; k < w.length; k++) { const v = grid[r + dr * k][c + dc * k]; if (v && v !== w[k]) { fits = false; break } }
+        if (!fits) continue; for (let k = 0; k < w.length; k++) grid[r + dr * k][c + dc * k] = w[k]; placed.push({ w, r, c, er, ec }); words.push(w); ok = true;
+      }
+    }
+    if (words.length === 6) break;
+  }
+  const AZ = 'ABCDEFGHIJKLMNOPRSTUVWY'; for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) if (!grid[r][c]) grid[r][c] = AZ[Math.random() * AZ.length | 0];
+  found = []; time = 0; run = true; renderList();
+}
+function renderList() { document.getElementById('list').innerHTML = words.map(w => `<span class="${found.some(f => f.w === w) ? 'got' : ''}">${w}</span>`).join(''); G.set('f', found.length) }
+const at = (px, py) => { const c = Math.floor((px - ox) / cell), r = Math.floor((py - oy) / cell); return r >= 0 && c >= 0 && r < N && c < N ? [r, c] : null };
+addEventListener('pointerdown', e => { if (!run) return; const p = at(e.clientX, e.clientY); if (p) sel = { s: p, e: p } });
+addEventListener('pointermove', e => { if (!sel) return; const p = at(e.clientX, e.clientY); if (!p) return; const dr = p[0] - sel.s[0], dc = p[1] - sel.s[1]; if (dr === 0 || dc === 0 || Math.abs(dr) === Math.abs(dc)) sel.e = p });
+addEventListener('pointerup', () => {
+  if (!sel) return; const { s, e } = sel; sel = null;
+  const hit = placed.find(p => !found.some(f => f.w === p.w) && ((p.r === s[0] && p.c === s[1] && p.er === e[0] && p.ec === e[1]) || (p.r === e[0] && p.c === e[1] && p.er === s[0] && p.ec === s[1])));
+  if (hit) { found.push({ ...hit, col: colors[found.length % colors.length] }); renderList(); G.beep(700 + found.length * 80, .12, 'triangle');
+    if (found.length === words.length) { run = false; const s2 = Math.ceil(time); G.best('wordsearch', s2, true); showBest(); setTimeout(() => G.overlay('All found! 🎉', 'Time: ' + s2 + ' seconds.', 'New puzzle', make), 500) } }
+  else if (s[0] !== e[0] || s[1] !== e[1]) G.beep(200, .08, 'square', .04);
+});
+G.loop(dt => {
+  if (run) { time += dt; G.set('t', Math.floor(time)) }
+  x.fillStyle = '#0b0820'; x.fillRect(0, 0, K.W, K.H); if (!grid) return;
+  x.fillStyle = '#130d2c'; x.fillRect(ox, oy, cell * N, cell * N);
+  const bar = (r1, c1, r2, c2, col) => { x.strokeStyle = col; x.globalAlpha = .45; x.lineWidth = cell * .75; x.lineCap = 'round'; x.beginPath(); x.moveTo(ox + (c1 + .5) * cell, oy + (r1 + .5) * cell); x.lineTo(ox + (c2 + .5) * cell, oy + (r2 + .5) * cell); x.stroke(); x.globalAlpha = 1 };
+  for (const f of found) bar(f.r, f.c, f.er, f.ec, f.col);
+  if (sel) bar(sel.s[0], sel.s[1], sel.e[0], sel.e[1], '#ffffff');
+  x.fillStyle = '#fff'; x.font = `800 ${cell * .55}px system-ui`; x.textAlign = 'center'; x.textBaseline = 'middle';
+  for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) x.fillText(grid[r][c], ox + (c + .5) * cell, oy + (r + .55) * cell);
+});
+make();
+G.overlay('Word Search', 'Find the 6 hidden words listed at the bottom.<br>Words can go across, down, diagonal — even backwards!<br>Drag your finger from the first letter to the last.', 'Start', () => { time = 0 });
+</script></body></html>

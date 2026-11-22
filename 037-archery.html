@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Archery</title><script>
+// Shared helpers for every arcade game
+const G = (() => {
+  const st = document.createElement('style');
+  st.textContent = `
+html,body{margin:0;height:100%;background:#0b0820;color:#fff;font-family:system-ui,-apple-system,sans-serif;overflow:hidden;
+  touch-action:none;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
+.hud{position:fixed;top:12px;left:0;right:0;display:flex;justify-content:space-between;padding:0 18px;font-weight:700;
+  letter-spacing:1px;z-index:5;pointer-events:none;color:#cfe8ff}
+.hud b{color:#fff;font-size:20px;text-shadow:0 0 10px #3df5ff}
+.ov{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  background:rgba(8,5,25,.85);z-index:10;text-align:center;padding:20px}
+.ov h1{margin:0 0 10px;font-size:clamp(30px,8vw,52px);background:linear-gradient(90deg,#3df5ff,#ff3df0);
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.ov p{opacity:.88;line-height:1.6;max-width:340px;margin:6px 0}
+.ov button{margin-top:18px;font:inherit;font-weight:800;font-size:18px;padding:13px 34px;border:0;border-radius:999px;
+  background:linear-gradient(90deg,#3df5ff,#ff3df0);color:#0b0820;cursor:pointer}
+`;
+  document.head.appendChild(st);
+
+  let ac;
+  function beep(f, d = .08, type = 'sine', v = .1) {
+    try {
+      ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.type = type; o.frequency.value = f;
+      g.gain.setValueAtTime(v, ac.currentTime);
+      g.gain.exponentialRampToValueAtTime(.001, ac.currentTime + d);
+      o.connect(g).connect(ac.destination); o.start(); o.stop(ac.currentTime + d);
+    } catch (e) {}
+  }
+  function getBest(k) { try { return +localStorage.getItem('arc_' + k) || 0 } catch (e) { return 0 } }
+  function setBest(k, v) { try { localStorage.setItem('arc_' + k, v) } catch (e) {} }
+  // Save if higher (or lower when lowerIsBetter). Returns current best.
+  function best(k, v, lowerIsBetter) {
+    const b = getBest(k);
+    if (v != null && (!b || (lowerIsBetter ? v < b : v > b))) { setBest(k, v); return v }
+    return b;
+  }
+  function set(id, v) { const e = document.getElementById(id); if (e) e.textContent = v }
+
+  function overlay(title, html, btn, cb) {
+    let o = document.querySelector('.ov');
+    if (!o) { o = document.createElement('div'); o.className = 'ov'; document.body.appendChild(o) }
+    o.innerHTML = `<h1>${title}</h1><p>${html}</p><button>${btn}</button>`;
+    o.style.display = 'flex';
+    o.addEventListener('pointerdown', e => e.stopPropagation());
+    o.querySelector('button').onclick = e => { e.stopPropagation(); o.style.display = 'none'; beep(440, .08, 'triangle'); cb() };
+  }
+
+  // Swipe (touch/mouse) + arrow keys / WASD → 'L','R','U','D'
+  function swipe(cb) {
+    let sx = null, sy = null;
+    addEventListener('pointerdown', e => { sx = e.clientX; sy = e.clientY });
+    addEventListener('pointerup', e => {
+      if (sx == null) return;
+      const dx = e.clientX - sx, dy = e.clientY - sy; sx = null;
+      if (Math.max(Math.abs(dx), Math.abs(dy)) < 20) return;
+      cb(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'R' : 'L') : (dy > 0 ? 'D' : 'U'));
+    });
+    addEventListener('keydown', e => {
+      const m = { ArrowLeft: 'L', ArrowRight: 'R', ArrowUp: 'U', ArrowDown: 'D', a: 'L', d: 'R', w: 'U', s: 'D' }[e.key];
+      if (m) { e.preventDefault(); cb(m) }
+    });
+  }
+
+  // Full-screen crisp canvas. Returns {c, x, W, H}; set .onresize to react.
+  function canvas() {
+    const c = document.createElement('canvas');
+    c.style.cssText = 'display:block;width:100vw;height:100vh';
+    document.body.prepend(c);
+    const o = { c, x: c.getContext('2d'), W: 0, H: 0 };
+    function r() {
+      const d = Math.min(devicePixelRatio || 1, 2);
+      o.W = innerWidth; o.H = innerHeight; c.width = o.W * d; c.height = o.H * d;
+      o.x.setTransform(d, 0, 0, d, 0, 0); o.onresize && o.onresize();
+    }
+    addEventListener('resize', r); r();
+    return o;
+  }
+
+  // Game loop with delta time (seconds, capped)
+  function loop(fn) {
+    let last = performance.now();
+    function f(t) { const dt = Math.min(.05, (t - last) / 1000); last = t; fn(dt); requestAnimationFrame(f) }
+    requestAnimationFrame(f);
+  }
+
+  return { beep, getBest, setBest, best, set, overlay, swipe, canvas, loop };
+})();
+
+</script></head><body>
+<div class="hud"><span>Score <b id="s">0</b></span><span>Arrows <b id="a">10</b></span><span>Best <b id="b">0</b></span></div>
+<script>
+const K = G.canvas(), x = K.x, GR = 600, TH = 70;
+let arrows = 10, score = 0, run = false, drag = null, fly = null, stuck = [], tgt, wind = 0, msg = null, t = 0;
+G.set('b', G.best('archery'));
+const bow = () => ({ x: 46, y: K.H * .62 });
+function newTarget() {
+  const n = 10 - arrows;
+  tgt = { x: K.W - 40 - Math.random() * Math.min(80, K.W * .15), y0: K.H * (.3 + Math.random() * .35), amp: n > 3 ? 20 + n * 6 : 0, ph: Math.random() * 7, y: 0 };
+  wind = n > 1 ? (Math.random() - .5) * (40 + n * 12) : 0; stuck = [];
+}
+function start() { arrows = 10; score = 0; run = true; G.set('s', 0); G.set('a', 10); newTarget() }
+addEventListener('pointerdown', e => { if (run && !fly) drag = { x: e.clientX, y: e.clientY, cx: e.clientX, cy: e.clientY } });
+addEventListener('pointermove', e => { if (drag) { drag.cx = e.clientX; drag.cy = e.clientY } });
+addEventListener('pointerup', () => {
+  if (!drag) return; const dx = drag.x - drag.cx, dy = drag.y - drag.cy, d = Math.hypot(dx, dy); drag = null; if (d < 15) return;
+  const p = Math.min(d, 170) * 5.2, b = bow(); fly = { x: b.x, y: b.y, vx: dx / d * p, vy: dy / d * p }; arrows--; G.set('a', arrows); G.beep(300, .08, 'triangle');
+});
+function next() { if (arrows <= 0) { run = false; G.set('b', G.best('archery', score)); setTimeout(() => G.overlay('Round over 🎯', 'Score: ' + score + ' / 100', 'Play again', start), 600) } else newTarget() }
+G.loop(dt => {
+  t += dt; if (msg) { msg.life -= dt; if (msg.life <= 0) msg = null }
+  if (tgt) tgt.y = tgt.y0 + Math.sin(t * 1.5 + tgt.ph) * tgt.amp;
+  if (fly) {
+    fly.vy += GR * dt; fly.vx += wind * dt; fly.x += fly.vx * dt; fly.y += fly.vy * dt;
+    if (fly.x >= tgt.x - 6 && Math.abs(fly.y - tgt.y) < TH) {
+      const off = Math.abs(fly.y - tgt.y), pts = off < 8 ? 10 : off < 22 ? 8 : off < 36 ? 6 : off < 52 ? 4 : 2;
+      score += pts; G.set('s', score); stuck.push({ dy: fly.y - tgt.y, ang: Math.atan2(fly.vy, fly.vx) });
+      msg = { t: pts === 10 ? 'BULLSEYE! +10' : '+' + pts, life: 1.2 }; G.beep(pts === 10 ? 1200 : 500 + pts * 50, .15, 'triangle');
+      fly = null; setTimeout(next, 900);
+    } else if (fly.x > K.W + 50 || fly.y > K.H + 50 || fly.x < -50) { fly = null; msg = { t: 'Miss', life: 1 }; G.beep(150, .2, 'sawtooth'); setTimeout(next, 600) }
+  }
+  // draw
+  const bg = x.createLinearGradient(0, 0, 0, K.H); bg.addColorStop(0, '#1c3a6a'); bg.addColorStop(1, '#0b0820'); x.fillStyle = bg; x.fillRect(0, 0, K.W, K.H);
+  x.fillStyle = '#123a22'; x.fillRect(0, K.H * .82, K.W, K.H);
+  if (tgt) {
+    x.fillStyle = '#6b4a2a'; x.fillRect(tgt.x + 6, tgt.y, 6, K.H);
+    const rings = ['#fff', '#111', '#3d8bff', '#ff4d6d', '#ffe35a'];
+    rings.forEach((c, i) => { const h = TH * (1 - i * .19); x.fillStyle = c; x.beginPath(); x.ellipse(tgt.x, tgt.y, 12 - i, h, 0, 0, 7); x.fill() });
+    for (const s of stuck) { x.save(); x.translate(tgt.x, tgt.y + s.dy); x.rotate(s.ang); x.fillStyle = '#e8d8b0'; x.fillRect(-40, -1.5, 40, 3); x.fillStyle = '#ff3df0'; x.fillRect(-40, -4, 9, 8); x.restore() }
+    // wind
+    if (wind) { x.fillStyle = '#cfe8ff'; x.font = '700 15px system-ui'; x.textAlign = 'center'; x.fillText('Wind ' + (wind > 0 ? '→' : '←') + ' ' + Math.abs(wind / 20).toFixed(1), K.W / 2, 80) }
+  }
+  const b = bow(); let ang = 0, pull = 0;
+  if (drag) { const dx = drag.x - drag.cx, dy = drag.y - drag.cy; ang = Math.atan2(dy, dx); pull = Math.min(Math.hypot(dx, dy), 170) / 170 }
+  x.save(); x.translate(b.x, b.y); x.rotate(ang);
+  x.strokeStyle = '#ff8a3d'; x.lineWidth = 5; x.beginPath(); x.arc(0, 0, 40, -1.2, 1.2); x.stroke();
+  x.strokeStyle = '#fff'; x.lineWidth = 1.5; x.beginPath(); x.moveTo(Math.cos(-1.2) * 40, Math.sin(-1.2) * 40); x.lineTo(-pull * 30 + 14, 0); x.lineTo(Math.cos(1.2) * 40, Math.sin(1.2) * 40); x.stroke();
+  if (!fly && run) { x.fillStyle = '#e8d8b0'; x.fillRect(-pull * 30 + 14, -1.5, 52, 3); x.fillStyle = '#ccc'; x.beginPath(); x.moveTo(-pull * 30 + 72, 0); x.lineTo(-pull * 30 + 62, -5); x.lineTo(-pull * 30 + 62, 5); x.fill() }
+  x.restore();
+  if (drag && pull > .05) { // aim dots
+    let px = b.x, py = b.y, vx = Math.cos(ang) * pull * 170 * 5.2, vy = Math.sin(ang) * pull * 170 * 5.2; x.fillStyle = 'rgba(255,255,255,.5)';
+    for (let i = 0; i < 12; i++) { for (let k = 0; k < 4; k++) { vy += GR * .015; vx += wind * .015; px += vx * .015; py += vy * .015 } x.beginPath(); x.arc(px, py, 2.5, 0, 7); x.fill() }
+  }
+  if (fly) { x.save(); x.translate(fly.x, fly.y); x.rotate(Math.atan2(fly.vy, fly.vx)); x.fillStyle = '#e8d8b0'; x.fillRect(-40, -1.5, 40, 3); x.fillStyle = '#ff3df0'; x.fillRect(-40, -4, 9, 8); x.restore() }
+  if (msg) { x.globalAlpha = Math.min(1, msg.life); x.fillStyle = '#ffe35a'; x.font = '900 30px system-ui'; x.textAlign = 'center'; x.fillText(msg.t, K.W / 2, K.H * .2); x.globalAlpha = 1 }
+});
+G.overlay('Archery', 'Touch the screen and pull back to aim, like a slingshot.<br>Let go to shoot. The dots show your path.<br>Watch the wind! 10 arrows, 10 points max each.', 'Start', start);
+</script></body></html>

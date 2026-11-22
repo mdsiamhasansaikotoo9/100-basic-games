@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Road Crosser</title><script>
+// Shared helpers for every arcade game
+const G = (() => {
+  const st = document.createElement('style');
+  st.textContent = `
+html,body{margin:0;height:100%;background:#0b0820;color:#fff;font-family:system-ui,-apple-system,sans-serif;overflow:hidden;
+  touch-action:none;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
+.hud{position:fixed;top:12px;left:0;right:0;display:flex;justify-content:space-between;padding:0 18px;font-weight:700;
+  letter-spacing:1px;z-index:5;pointer-events:none;color:#cfe8ff}
+.hud b{color:#fff;font-size:20px;text-shadow:0 0 10px #3df5ff}
+.ov{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  background:rgba(8,5,25,.85);z-index:10;text-align:center;padding:20px}
+.ov h1{margin:0 0 10px;font-size:clamp(30px,8vw,52px);background:linear-gradient(90deg,#3df5ff,#ff3df0);
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.ov p{opacity:.88;line-height:1.6;max-width:340px;margin:6px 0}
+.ov button{margin-top:18px;font:inherit;font-weight:800;font-size:18px;padding:13px 34px;border:0;border-radius:999px;
+  background:linear-gradient(90deg,#3df5ff,#ff3df0);color:#0b0820;cursor:pointer}
+`;
+  document.head.appendChild(st);
+
+  let ac;
+  function beep(f, d = .08, type = 'sine', v = .1) {
+    try {
+      ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.type = type; o.frequency.value = f;
+      g.gain.setValueAtTime(v, ac.currentTime);
+      g.gain.exponentialRampToValueAtTime(.001, ac.currentTime + d);
+      o.connect(g).connect(ac.destination); o.start(); o.stop(ac.currentTime + d);
+    } catch (e) {}
+  }
+  function getBest(k) { try { return +localStorage.getItem('arc_' + k) || 0 } catch (e) { return 0 } }
+  function setBest(k, v) { try { localStorage.setItem('arc_' + k, v) } catch (e) {} }
+  // Save if higher (or lower when lowerIsBetter). Returns current best.
+  function best(k, v, lowerIsBetter) {
+    const b = getBest(k);
+    if (v != null && (!b || (lowerIsBetter ? v < b : v > b))) { setBest(k, v); return v }
+    return b;
+  }
+  function set(id, v) { const e = document.getElementById(id); if (e) e.textContent = v }
+
+  function overlay(title, html, btn, cb) {
+    let o = document.querySelector('.ov');
+    if (!o) { o = document.createElement('div'); o.className = 'ov'; document.body.appendChild(o) }
+    o.innerHTML = `<h1>${title}</h1><p>${html}</p><button>${btn}</button>`;
+    o.style.display = 'flex';
+    o.addEventListener('pointerdown', e => e.stopPropagation());
+    o.querySelector('button').onclick = e => { e.stopPropagation(); o.style.display = 'none'; beep(440, .08, 'triangle'); cb() };
+  }
+
+  // Swipe (touch/mouse) + arrow keys / WASD → 'L','R','U','D'
+  function swipe(cb) {
+    let sx = null, sy = null;
+    addEventListener('pointerdown', e => { sx = e.clientX; sy = e.clientY });
+    addEventListener('pointerup', e => {
+      if (sx == null) return;
+      const dx = e.clientX - sx, dy = e.clientY - sy; sx = null;
+      if (Math.max(Math.abs(dx), Math.abs(dy)) < 20) return;
+      cb(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'R' : 'L') : (dy > 0 ? 'D' : 'U'));
+    });
+    addEventListener('keydown', e => {
+      const m = { ArrowLeft: 'L', ArrowRight: 'R', ArrowUp: 'U', ArrowDown: 'D', a: 'L', d: 'R', w: 'U', s: 'D' }[e.key];
+      if (m) { e.preventDefault(); cb(m) }
+    });
+  }
+
+  // Full-screen crisp canvas. Returns {c, x, W, H}; set .onresize to react.
+  function canvas() {
+    const c = document.createElement('canvas');
+    c.style.cssText = 'display:block;width:100vw;height:100vh';
+    document.body.prepend(c);
+    const o = { c, x: c.getContext('2d'), W: 0, H: 0 };
+    function r() {
+      const d = Math.min(devicePixelRatio || 1, 2);
+      o.W = innerWidth; o.H = innerHeight; c.width = o.W * d; c.height = o.H * d;
+      o.x.setTransform(d, 0, 0, d, 0, 0); o.onresize && o.onresize();
+    }
+    addEventListener('resize', r); r();
+    return o;
+  }
+
+  // Game loop with delta time (seconds, capped)
+  function loop(fn) {
+    let last = performance.now();
+    function f(t) { const dt = Math.min(.05, (t - last) / 1000); last = t; fn(dt); requestAnimationFrame(f) }
+    requestAnimationFrame(f);
+  }
+
+  return { beep, getBest, setBest, best, set, overlay, swipe, canvas, loop };
+})();
+
+</script></head><body>
+<div class="hud"><span>Score <b id="s">0</b></span><span>Best <b id="b">0</b></span></div>
+<script>
+const K = G.canvas(), x = K.x, COLS = 9;
+let rows = {}, me = null, run = false, best = 0, cam = 0, t = 0, hopT = 0, idle = 0;
+G.set('b', G.best('crosser'));
+const CS = () => Math.min(K.W / COLS, 60), OX = () => (K.W - CS() * COLS) / 2;
+function makeRow(i) {
+  if (i < 2) return { type: 'grass', items: [] };
+  const lv = Math.min(i / 40, 1), r = Math.random(), prev = rows[i - 1];
+  let type = r < .25 ? 'grass' : r < .65 ? 'road' : 'river'; if (prev && prev.type === 'grass' && type === 'grass') type = 'road';
+  const dir = Math.random() < .5 ? -1 : 1, items = [];
+  if (type === 'road') {
+    const sp = (1.2 + Math.random() * 1.5 + lv * 2) * dir, n = 2 + (Math.random() * 2 | 0), w = Math.random() < .3 ? 2.2 : 1.3, col = ['#ff4d6d', '#ffe35a', '#3d8bff', '#ff8a3d', '#b44dff'][Math.random() * 5 | 0];
+    for (let k = 0; k < n; k++) items.push({ x: k * (COLS + 3) / n + Math.random(), w, col });
+    return { type, items, sp, span: COLS + 3 };
+  }
+  if (type === 'river') {
+    const sp = (.8 + Math.random() * 1.2 + lv) * dir, n = 3, w = 2 + Math.random() * 1.5 - lv;
+    for (let k = 0; k < n; k++) items.push({ x: k * (COLS + 4) / n, w: Math.max(1.6, w) });
+    return { type, items, sp, span: COLS + 4 };
+  }
+  const trees = []; for (let c = 0; c < COLS; c++) if (Math.random() < .12 && c !== 4) trees.push(c);
+  return { type, items: [], trees };
+}
+const row = i => rows[i] || (rows[i] = makeRow(i));
+function start() { rows = {}; me = { c: 4, r: 0, x: 4, dead: 0 }; best = 0; cam = 0; idle = 0; run = true; G.set('s', 0) }
+function hop(d) {
+  if (!run || hopT > 0) return;
+  let { c, r } = me; c = Math.round(me.x);
+  if (d == 'U') r++; if (d == 'D') r = Math.max(0, r - 1); if (d == 'L') c--; if (d == 'R') c++;
+  if (c < 0 || c >= COLS) return;
+  const R = row(r); if (R.trees && R.trees.includes(c)) return;
+  me.c = c; me.r = r; me.x = c; hopT = .12; idle = 0; G.beep(520, .03, 'square', .04);
+  if (r > best) { best = r; G.set('s', best) }
+}
+let sx = null, sy = null;
+addEventListener('pointerdown', e => { sx = e.clientX; sy = e.clientY });
+addEventListener('pointerup', e => {
+  if (sx == null) return; const dx = e.clientX - sx, dy = e.clientY - sy; sx = null;
+  if (Math.max(Math.abs(dx), Math.abs(dy)) < 20) return hop('U');
+  hop(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'R' : 'L') : (dy > 0 ? 'D' : 'U'));
+});
+addEventListener('keydown', e => { const m = { ArrowUp: 'U', ArrowDown: 'D', ArrowLeft: 'L', ArrowRight: 'R' }[e.key]; if (m) { e.preventDefault(); hop(m) } });
+function die(why) { if (!run) return; run = false; me.dead = 1; G.beep(110, .5, 'sawtooth'); G.set('b', G.best('crosser', best)); setTimeout(() => G.overlay(why, 'Score: ' + best, 'Play again', start), 700) }
+G.loop(dt => {
+  t += dt; hopT = Math.max(0, hopT - dt);
+  const cs = CS(), ox = OX(), visible = Math.ceil(K.H / cs) + 2;
+  for (let i = Math.floor(cam) - 2; i < cam + visible; i++) { const R = row(i); if (R.items.length) for (const it of R.items) { it.x += R.sp * dt; if (R.sp > 0 && it.x > COLS + 1) it.x -= R.span; if (R.sp < 0 && it.x + it.w < -1) it.x += R.span } }
+  if (run) {
+    idle += dt;
+    const R = row(me.r);
+    if (R.type === 'road' && hopT === 0) for (const it of R.items) if (me.x + .8 > it.x && me.x + .2 < it.x + it.w) die('Splat! 🚗');
+    if (R.type === 'river' && hopT === 0) {
+      const on = R.items.find(it => me.x + .5 > it.x && me.x + .5 < it.x + it.w);
+      if (!on) die('Splash! 🌊'); else { me.x += R.sp * dt; if (me.x < -.4 || me.x > COLS - .6) die('Swept away! 🌊') }
+    }
+    if (R.type !== 'river') me.x += (me.c - me.x) * Math.min(1, dt * 20);
+    const target = Math.max(0, me.r - 3); cam += (target - cam) * Math.min(1, dt * 4);
+    if (me.r < cam - 1.5) die('Too slow!');
+    if (idle > 8 && run) cam += dt * .8;
+  }
+  // draw: row i at screen y = K.H - (i - cam + 1) * cs - 40
+  x.fillStyle = '#0b0820'; x.fillRect(0, 0, K.W, K.H);
+  const Y = i => K.H - 50 - (i - cam + 1) * cs;
+  for (let i = Math.floor(cam) - 2; i < cam + visible; i++) {
+    const R = row(i), y = Y(i);
+    x.fillStyle = R.type === 'grass' ? (i % 2 ? '#1f7a3e' : '#22874a') : R.type === 'road' ? '#2a2a3a' : '#1a4a9a'; x.fillRect(ox, y, cs * COLS, cs);
+    if (R.type === 'road') { x.fillStyle = 'rgba(255,255,255,.25)'; for (let c = 0; c < COLS; c += 2) x.fillRect(ox + c * cs + cs * .2, y + cs / 2 - 1, cs * .6, 2) }
+    if (R.trees) for (const c of R.trees) { x.fillStyle = '#0d4a22'; x.beginPath(); x.arc(ox + (c + .5) * cs, y + cs / 2, cs * .38, 0, 7); x.fill() }
+    for (const it of R.items) {
+      if (R.type === 'road') { x.fillStyle = it.col; x.shadowColor = it.col; x.shadowBlur = 10; x.fillRect(ox + it.x * cs, y + cs * .18, it.w * cs, cs * .64); x.shadowBlur = 0; x.fillStyle = 'rgba(0,0,0,.4)'; x.fillRect(ox + (it.x + it.w * .3) * cs, y + cs * .25, it.w * cs * .4, cs * .5) }
+      else { x.fillStyle = '#8a5a2a'; x.fillRect(ox + it.x * cs, y + cs * .15, it.w * cs, cs * .7); x.fillStyle = '#6a4220'; x.fillRect(ox + it.x * cs, y + cs * .45, it.w * cs, 3) }
+    }
+  }
+  x.clearRect(0, 0, ox, K.H); x.clearRect(ox + cs * COLS, 0, K.W, K.H); x.fillStyle = '#0b0820'; x.fillRect(0, 0, ox, K.H); x.fillRect(ox + cs * COLS, 0, K.W, K.H);
+  if (me) {
+    const y = Y(me.r) + cs / 2 - (hopT > 0 ? Math.sin(hopT / .12 * Math.PI) * 8 : 0);
+    x.font = `${cs * .75}px system-ui`; x.textAlign = 'center'; x.textBaseline = 'middle'; x.fillText(me.dead ? '💥' : '🐥', ox + (me.x + .5) * cs, y);
+  }
+});
+G.overlay('Road Crosser', 'Tap to hop forward. Swipe to hop left, right or back.<br>Dodge cars. On rivers, ride the logs — don\'t fall in!<br>Keep moving forward.', 'Start', start);
+</script></body></html>

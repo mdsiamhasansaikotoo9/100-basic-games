@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Rock Paper Scissors</title><script>
+// Shared helpers for every arcade game
+const G = (() => {
+  const st = document.createElement('style');
+  st.textContent = `
+html,body{margin:0;height:100%;background:#0b0820;color:#fff;font-family:system-ui,-apple-system,sans-serif;overflow:hidden;
+  touch-action:none;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
+.hud{position:fixed;top:12px;left:0;right:0;display:flex;justify-content:space-between;padding:0 18px;font-weight:700;
+  letter-spacing:1px;z-index:5;pointer-events:none;color:#cfe8ff}
+.hud b{color:#fff;font-size:20px;text-shadow:0 0 10px #3df5ff}
+.ov{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  background:rgba(8,5,25,.85);z-index:10;text-align:center;padding:20px}
+.ov h1{margin:0 0 10px;font-size:clamp(30px,8vw,52px);background:linear-gradient(90deg,#3df5ff,#ff3df0);
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.ov p{opacity:.88;line-height:1.6;max-width:340px;margin:6px 0}
+.ov button{margin-top:18px;font:inherit;font-weight:800;font-size:18px;padding:13px 34px;border:0;border-radius:999px;
+  background:linear-gradient(90deg,#3df5ff,#ff3df0);color:#0b0820;cursor:pointer}
+`;
+  document.head.appendChild(st);
+
+  let ac;
+  function beep(f, d = .08, type = 'sine', v = .1) {
+    try {
+      ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.type = type; o.frequency.value = f;
+      g.gain.setValueAtTime(v, ac.currentTime);
+      g.gain.exponentialRampToValueAtTime(.001, ac.currentTime + d);
+      o.connect(g).connect(ac.destination); o.start(); o.stop(ac.currentTime + d);
+    } catch (e) {}
+  }
+  function getBest(k) { try { return +localStorage.getItem('arc_' + k) || 0 } catch (e) { return 0 } }
+  function setBest(k, v) { try { localStorage.setItem('arc_' + k, v) } catch (e) {} }
+  // Save if higher (or lower when lowerIsBetter). Returns current best.
+  function best(k, v, lowerIsBetter) {
+    const b = getBest(k);
+    if (v != null && (!b || (lowerIsBetter ? v < b : v > b))) { setBest(k, v); return v }
+    return b;
+  }
+  function set(id, v) { const e = document.getElementById(id); if (e) e.textContent = v }
+
+  function overlay(title, html, btn, cb) {
+    let o = document.querySelector('.ov');
+    if (!o) { o = document.createElement('div'); o.className = 'ov'; document.body.appendChild(o) }
+    o.innerHTML = `<h1>${title}</h1><p>${html}</p><button>${btn}</button>`;
+    o.style.display = 'flex';
+    o.addEventListener('pointerdown', e => e.stopPropagation());
+    o.querySelector('button').onclick = e => { e.stopPropagation(); o.style.display = 'none'; beep(440, .08, 'triangle'); cb() };
+  }
+
+  // Swipe (touch/mouse) + arrow keys / WASD → 'L','R','U','D'
+  function swipe(cb) {
+    let sx = null, sy = null;
+    addEventListener('pointerdown', e => { sx = e.clientX; sy = e.clientY });
+    addEventListener('pointerup', e => {
+      if (sx == null) return;
+      const dx = e.clientX - sx, dy = e.clientY - sy; sx = null;
+      if (Math.max(Math.abs(dx), Math.abs(dy)) < 20) return;
+      cb(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'R' : 'L') : (dy > 0 ? 'D' : 'U'));
+    });
+    addEventListener('keydown', e => {
+      const m = { ArrowLeft: 'L', ArrowRight: 'R', ArrowUp: 'U', ArrowDown: 'D', a: 'L', d: 'R', w: 'U', s: 'D' }[e.key];
+      if (m) { e.preventDefault(); cb(m) }
+    });
+  }
+
+  // Full-screen crisp canvas. Returns {c, x, W, H}; set .onresize to react.
+  function canvas() {
+    const c = document.createElement('canvas');
+    c.style.cssText = 'display:block;width:100vw;height:100vh';
+    document.body.prepend(c);
+    const o = { c, x: c.getContext('2d'), W: 0, H: 0 };
+    function r() {
+      const d = Math.min(devicePixelRatio || 1, 2);
+      o.W = innerWidth; o.H = innerHeight; c.width = o.W * d; c.height = o.H * d;
+      o.x.setTransform(d, 0, 0, d, 0, 0); o.onresize && o.onresize();
+    }
+    addEventListener('resize', r); r();
+    return o;
+  }
+
+  // Game loop with delta time (seconds, capped)
+  function loop(fn) {
+    let last = performance.now();
+    function f(t) { const dt = Math.min(.05, (t - last) / 1000); last = t; fn(dt); requestAnimationFrame(f) }
+    requestAnimationFrame(f);
+  }
+
+  return { beep, getBest, setBest, best, set, overlay, swipe, canvas, loop };
+})();
+
+</script>
+<style>
+#box{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:20px}
+#arena{display:flex;gap:30px;align-items:center;font-size:clamp(60px,20vw,110px)}
+#arena span{display:inline-block;transition:transform .2s}#vs{font-size:20px;font-weight:900;color:#cfe8ff}
+#res{font-size:24px;font-weight:900;height:30px}
+#btns{display:flex;gap:14px}#btns button{font-size:44px;width:84px;height:84px;border-radius:50%;border:3px solid #3df5ff;background:#1d1550;cursor:pointer}
+#btns button:active{transform:scale(.9)}
+.shake{animation:sh .45s}@keyframes sh{0%,50%,100%{transform:translateY(0)}25%,75%{transform:translateY(-18px)}}
+</style></head><body>
+<div class="hud"><span>You <b id="p">0</b></span><span>Wins <b id="b">0</b></span><span>CPU <b id="c">0</b></span></div>
+<div id="box"><div style="color:#cfe8ff;font-weight:700">First to 5 wins</div><div id="arena"><span id="me">✊</span><span id="vs">VS</span><span id="cpu">✊</span></div><div id="res"></div>
+<div id="btns"><button data-m="0">✊</button><button data-m="1">✋</button><button data-m="2">✌️</button></div></div>
+<script>
+const E = ['✊', '✋', '✌️'], NAME = ['Rock', 'Paper', 'Scissors'];
+let ps = 0, cs = 0, busy = false, last = null, trans = [[1, 1, 1], [1, 1, 1], [1, 1, 1]], freq = [1, 1, 1];
+G.set('b', G.getBest('rps'));
+function predict() { // guess player's next move from habits, then beat it
+  const row = last == null ? freq : trans[last].map((v, i) => v + freq[i] * .3), sum = row.reduce((a, b) => a + b); let r = Math.random() * sum, guess = 0;
+  for (let i = 0; i < 3; i++) { r -= row[i]; if (r <= 0) { guess = i; break } }
+  return Math.random() < .25 ? Math.random() * 3 | 0 : (guess + 1) % 3;
+}
+document.querySelectorAll('#btns button').forEach(b => b.onclick = () => play(+b.dataset.m));
+addEventListener('keydown', e => { const m = { r: 0, p: 1, s: 2, 1: 0, 2: 1, 3: 2 }[e.key]; if (m != null) play(m) });
+function play(m) {
+  if (busy) return; busy = true; const c = predict();
+  const me = document.getElementById('me'), cp = document.getElementById('cpu'); me.textContent = cp.textContent = '✊'; me.className = cp.className = 'shake'; G.set('res', '');
+  G.beep(300, .05, 'square', .04); setTimeout(() => G.beep(300, .05, 'square', .04), 220);
+  setTimeout(() => {
+    me.className = cp.className = ''; me.textContent = E[m]; cp.textContent = E[c];
+    if (last != null) trans[last][m]++; freq[m]++; last = m;
+    const d = (m - c + 3) % 3, res = document.getElementById('res');
+    if (d === 0) { res.textContent = 'Tie!'; res.style.color = '#ffe35a'; G.beep(440, .1, 'triangle') }
+    else if (d === 1) { ps++; res.textContent = NAME[m] + ' beats ' + NAME[c] + '!'; res.style.color = '#4dff88'; G.beep(800, .12, 'triangle') }
+    else { cs++; res.textContent = NAME[c] + ' beats ' + NAME[m]; res.style.color = '#ff4d6d'; G.beep(180, .15, 'sawtooth') }
+    G.set('p', ps); G.set('c', cs);
+    if (ps >= 5 || cs >= 5) {
+      const win = ps >= 5; if (win) { const w = G.getBest('rps') + 1; G.setBest('rps', w); G.set('b', w) }
+      setTimeout(() => G.overlay(win ? 'You win! 🎉' : 'CPU wins', 'You ' + ps + ' – ' + cs + ' CPU<br>The CPU learns your habits — mix it up!', 'Play again', () => { ps = cs = 0; G.set('p', 0); G.set('c', 0); busy = false; G.set('res', '') }), 700);
+    } else busy = false;
+  }, 480);
+}
+G.overlay('Rock Paper Scissors', 'Rock beats Scissors. Scissors beats Paper. Paper beats Rock.<br>First to 5 wins.<br>Careful — the CPU watches your patterns!', 'Start', () => {});
+</script></body></html>

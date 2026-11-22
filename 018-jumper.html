@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Jumper</title><script>
+// Shared helpers for every arcade game
+const G = (() => {
+  const st = document.createElement('style');
+  st.textContent = `
+html,body{margin:0;height:100%;background:#0b0820;color:#fff;font-family:system-ui,-apple-system,sans-serif;overflow:hidden;
+  touch-action:none;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
+.hud{position:fixed;top:12px;left:0;right:0;display:flex;justify-content:space-between;padding:0 18px;font-weight:700;
+  letter-spacing:1px;z-index:5;pointer-events:none;color:#cfe8ff}
+.hud b{color:#fff;font-size:20px;text-shadow:0 0 10px #3df5ff}
+.ov{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  background:rgba(8,5,25,.85);z-index:10;text-align:center;padding:20px}
+.ov h1{margin:0 0 10px;font-size:clamp(30px,8vw,52px);background:linear-gradient(90deg,#3df5ff,#ff3df0);
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.ov p{opacity:.88;line-height:1.6;max-width:340px;margin:6px 0}
+.ov button{margin-top:18px;font:inherit;font-weight:800;font-size:18px;padding:13px 34px;border:0;border-radius:999px;
+  background:linear-gradient(90deg,#3df5ff,#ff3df0);color:#0b0820;cursor:pointer}
+`;
+  document.head.appendChild(st);
+
+  let ac;
+  function beep(f, d = .08, type = 'sine', v = .1) {
+    try {
+      ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.type = type; o.frequency.value = f;
+      g.gain.setValueAtTime(v, ac.currentTime);
+      g.gain.exponentialRampToValueAtTime(.001, ac.currentTime + d);
+      o.connect(g).connect(ac.destination); o.start(); o.stop(ac.currentTime + d);
+    } catch (e) {}
+  }
+  function getBest(k) { try { return +localStorage.getItem('arc_' + k) || 0 } catch (e) { return 0 } }
+  function setBest(k, v) { try { localStorage.setItem('arc_' + k, v) } catch (e) {} }
+  // Save if higher (or lower when lowerIsBetter). Returns current best.
+  function best(k, v, lowerIsBetter) {
+    const b = getBest(k);
+    if (v != null && (!b || (lowerIsBetter ? v < b : v > b))) { setBest(k, v); return v }
+    return b;
+  }
+  function set(id, v) { const e = document.getElementById(id); if (e) e.textContent = v }
+
+  function overlay(title, html, btn, cb) {
+    let o = document.querySelector('.ov');
+    if (!o) { o = document.createElement('div'); o.className = 'ov'; document.body.appendChild(o) }
+    o.innerHTML = `<h1>${title}</h1><p>${html}</p><button>${btn}</button>`;
+    o.style.display = 'flex';
+    o.addEventListener('pointerdown', e => e.stopPropagation());
+    o.querySelector('button').onclick = e => { e.stopPropagation(); o.style.display = 'none'; beep(440, .08, 'triangle'); cb() };
+  }
+
+  // Swipe (touch/mouse) + arrow keys / WASD → 'L','R','U','D'
+  function swipe(cb) {
+    let sx = null, sy = null;
+    addEventListener('pointerdown', e => { sx = e.clientX; sy = e.clientY });
+    addEventListener('pointerup', e => {
+      if (sx == null) return;
+      const dx = e.clientX - sx, dy = e.clientY - sy; sx = null;
+      if (Math.max(Math.abs(dx), Math.abs(dy)) < 20) return;
+      cb(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'R' : 'L') : (dy > 0 ? 'D' : 'U'));
+    });
+    addEventListener('keydown', e => {
+      const m = { ArrowLeft: 'L', ArrowRight: 'R', ArrowUp: 'U', ArrowDown: 'D', a: 'L', d: 'R', w: 'U', s: 'D' }[e.key];
+      if (m) { e.preventDefault(); cb(m) }
+    });
+  }
+
+  // Full-screen crisp canvas. Returns {c, x, W, H}; set .onresize to react.
+  function canvas() {
+    const c = document.createElement('canvas');
+    c.style.cssText = 'display:block;width:100vw;height:100vh';
+    document.body.prepend(c);
+    const o = { c, x: c.getContext('2d'), W: 0, H: 0 };
+    function r() {
+      const d = Math.min(devicePixelRatio || 1, 2);
+      o.W = innerWidth; o.H = innerHeight; c.width = o.W * d; c.height = o.H * d;
+      o.x.setTransform(d, 0, 0, d, 0, 0); o.onresize && o.onresize();
+    }
+    addEventListener('resize', r); r();
+    return o;
+  }
+
+  // Game loop with delta time (seconds, capped)
+  function loop(fn) {
+    let last = performance.now();
+    function f(t) { const dt = Math.min(.05, (t - last) / 1000); last = t; fn(dt); requestAnimationFrame(f) }
+    requestAnimationFrame(f);
+  }
+
+  return { beep, getBest, setBest, best, set, overlay, swipe, canvas, loop };
+})();
+
+</script></head><body>
+<div class="hud"><span>Height <b id="s">0</b></span><span>Best <b id="b">0</b></span></div>
+<script>
+const K = G.canvas(), x = K.x, GR = 1500, JV = 820, PW = 70;
+let pl = null, plats = [], camY = 0, run = false, dir = 0, startY = 0, score = 0;
+G.set('b', G.best('jumper'));
+function addPlat(y) {
+  const moving = score > 120 && Math.random() < Math.min(.4, score / 1000);
+  plats.push({ x: Math.random() * (K.W - PW), y, vx: moving ? (Math.random() < .5 ? -1 : 1) * (60 + Math.random() * 60) : 0 });
+}
+function start() {
+  plats = []; score = 0; camY = 0; startY = K.H - 80;
+  plats.push({ x: K.W / 2 - PW / 2, y: K.H - 40, vx: 0 });
+  let y = K.H - 40; while (y > -K.H) { y -= 70 + Math.random() * 40; addPlat(y) }
+  pl = { x: K.W / 2, y: K.H - 80, vy: -JV }; run = true; G.set('s', 0);
+}
+addEventListener('pointerdown', e => dir = e.clientX < K.W / 2 ? -1 : 1);
+addEventListener('pointerup', () => dir = 0); addEventListener('pointercancel', () => dir = 0);
+addEventListener('keydown', e => { if (e.key == 'ArrowLeft') dir = -1; if (e.key == 'ArrowRight') dir = 1 });
+addEventListener('keyup', e => { if (e.key == 'ArrowLeft' || e.key == 'ArrowRight') dir = 0 });
+G.loop(dt => {
+  if (run) {
+    const prevY = pl.y;
+    pl.vy += GR * dt; pl.y += pl.vy * dt; pl.x += dir * 380 * dt;
+    if (pl.x < -15) pl.x = K.W + 15; if (pl.x > K.W + 15) pl.x = -15;
+    for (const p of plats) {
+      if (p.vx) { p.x += p.vx * dt; if (p.x < 0 || p.x > K.W - PW) p.vx *= -1 }
+      if (pl.vy > 0 && prevY + 14 <= p.y && pl.y + 14 >= p.y && pl.x > p.x - 10 && pl.x < p.x + PW + 10) {
+        pl.y = p.y - 14; pl.vy = -JV; G.beep(500 + Math.random() * 100, .06, 'triangle', .06);
+      }
+    }
+    if (pl.y < camY + K.H * .4) camY = pl.y - K.H * .4;
+    score = Math.max(score, Math.floor((startY - pl.y) / 10)); G.set('s', score);
+    plats = plats.filter(p => p.y < camY + K.H + 60);
+    let top = Math.min(...plats.map(p => p.y));
+    const gap = Math.min(150, 70 + score / 15);
+    while (top > camY - 60) { top -= gap * (.7 + Math.random() * .3); addPlat(top) }
+    if (pl.y > camY + K.H + 40) { run = false; G.beep(120, .5, 'sawtooth'); G.set('b', G.best('jumper', score)); G.overlay('You fell!', 'Height: ' + score, 'Play again', start) }
+  }
+  // draw
+  const hue = (250 + score / 8) % 360, bg = x.createLinearGradient(0, 0, 0, K.H);
+  bg.addColorStop(0, `hsl(${hue},55%,12%)`); bg.addColorStop(1, '#0b0820'); x.fillStyle = bg; x.fillRect(0, 0, K.W, K.H);
+  x.save(); x.translate(0, -camY);
+  x.shadowBlur = 12;
+  for (const p of plats) { x.shadowColor = x.fillStyle = p.vx ? '#ff8a3d' : '#4dff88'; x.fillRect(p.x, p.y, PW, 10) }
+  if (pl) {
+    x.shadowColor = x.fillStyle = '#3df5ff'; x.beginPath(); x.arc(pl.x, pl.y, 14, 0, 7); x.fill();
+    x.shadowBlur = 0; x.fillStyle = '#0b0820'; x.fillRect(pl.x - 6, pl.y - 4, 3, 5); x.fillRect(pl.x + 3, pl.y - 4, 3, 5);
+  }
+  x.restore(); x.shadowBlur = 0;
+});
+G.overlay('Jumper', 'You bounce by yourself.<br>Hold the left or right side of the screen (or arrow keys) to move.<br>Climb as high as you can. Orange platforms move.', 'Start', start);
+</script></body></html>

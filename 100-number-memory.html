@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Number Memory</title><script>
+// Shared helpers for every arcade game
+const G = (() => {
+  const st = document.createElement('style');
+  st.textContent = `
+html,body{margin:0;height:100%;background:#0b0820;color:#fff;font-family:system-ui,-apple-system,sans-serif;overflow:hidden;
+  touch-action:none;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
+.hud{position:fixed;top:12px;left:0;right:0;display:flex;justify-content:space-between;padding:0 18px;font-weight:700;
+  letter-spacing:1px;z-index:5;pointer-events:none;color:#cfe8ff}
+.hud b{color:#fff;font-size:20px;text-shadow:0 0 10px #3df5ff}
+.ov{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  background:rgba(8,5,25,.85);z-index:10;text-align:center;padding:20px}
+.ov h1{margin:0 0 10px;font-size:clamp(30px,8vw,52px);background:linear-gradient(90deg,#3df5ff,#ff3df0);
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.ov p{opacity:.88;line-height:1.6;max-width:340px;margin:6px 0}
+.ov button{margin-top:18px;font:inherit;font-weight:800;font-size:18px;padding:13px 34px;border:0;border-radius:999px;
+  background:linear-gradient(90deg,#3df5ff,#ff3df0);color:#0b0820;cursor:pointer}
+`;
+  document.head.appendChild(st);
+
+  let ac;
+  function beep(f, d = .08, type = 'sine', v = .1) {
+    try {
+      ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.type = type; o.frequency.value = f;
+      g.gain.setValueAtTime(v, ac.currentTime);
+      g.gain.exponentialRampToValueAtTime(.001, ac.currentTime + d);
+      o.connect(g).connect(ac.destination); o.start(); o.stop(ac.currentTime + d);
+    } catch (e) {}
+  }
+  function getBest(k) { try { return +localStorage.getItem('arc_' + k) || 0 } catch (e) { return 0 } }
+  function setBest(k, v) { try { localStorage.setItem('arc_' + k, v) } catch (e) {} }
+  // Save if higher (or lower when lowerIsBetter). Returns current best.
+  function best(k, v, lowerIsBetter) {
+    const b = getBest(k);
+    if (v != null && (!b || (lowerIsBetter ? v < b : v > b))) { setBest(k, v); return v }
+    return b;
+  }
+  function set(id, v) { const e = document.getElementById(id); if (e) e.textContent = v }
+
+  function overlay(title, html, btn, cb) {
+    let o = document.querySelector('.ov');
+    if (!o) { o = document.createElement('div'); o.className = 'ov'; document.body.appendChild(o) }
+    o.innerHTML = `<h1>${title}</h1><p>${html}</p><button>${btn}</button>`;
+    o.style.display = 'flex';
+    o.addEventListener('pointerdown', e => e.stopPropagation());
+    o.querySelector('button').onclick = e => { e.stopPropagation(); o.style.display = 'none'; beep(440, .08, 'triangle'); cb() };
+  }
+
+  // Swipe (touch/mouse) + arrow keys / WASD → 'L','R','U','D'
+  function swipe(cb) {
+    let sx = null, sy = null;
+    addEventListener('pointerdown', e => { sx = e.clientX; sy = e.clientY });
+    addEventListener('pointerup', e => {
+      if (sx == null) return;
+      const dx = e.clientX - sx, dy = e.clientY - sy; sx = null;
+      if (Math.max(Math.abs(dx), Math.abs(dy)) < 20) return;
+      cb(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'R' : 'L') : (dy > 0 ? 'D' : 'U'));
+    });
+    addEventListener('keydown', e => {
+      const m = { ArrowLeft: 'L', ArrowRight: 'R', ArrowUp: 'U', ArrowDown: 'D', a: 'L', d: 'R', w: 'U', s: 'D' }[e.key];
+      if (m) { e.preventDefault(); cb(m) }
+    });
+  }
+
+  // Full-screen crisp canvas. Returns {c, x, W, H}; set .onresize to react.
+  function canvas() {
+    const c = document.createElement('canvas');
+    c.style.cssText = 'display:block;width:100vw;height:100vh';
+    document.body.prepend(c);
+    const o = { c, x: c.getContext('2d'), W: 0, H: 0 };
+    function r() {
+      const d = Math.min(devicePixelRatio || 1, 2);
+      o.W = innerWidth; o.H = innerHeight; c.width = o.W * d; c.height = o.H * d;
+      o.x.setTransform(d, 0, 0, d, 0, 0); o.onresize && o.onresize();
+    }
+    addEventListener('resize', r); r();
+    return o;
+  }
+
+  // Game loop with delta time (seconds, capped)
+  function loop(fn) {
+    let last = performance.now();
+    function f(t) { const dt = Math.min(.05, (t - last) / 1000); last = t; fn(dt); requestAnimationFrame(f) }
+    requestAnimationFrame(f);
+  }
+
+  return { beep, getBest, setBest, best, set, overlay, swipe, canvas, loop };
+})();
+
+</script>
+<style>
+#box{position:fixed;inset:56px 0 56px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;padding:0 10px}
+#num{font-size:clamp(30px,10vw,56px);font-weight:900;letter-spacing:4px;text-align:center;word-break:break-all;min-height:1.3em;text-shadow:0 0 16px #3df5ff}
+#bar{width:min(80vw,320px);height:6px;border-radius:3px;background:#1d1550;overflow:hidden}#fill{height:100%;background:#ffe35a;width:0}
+#msg{color:#cfe8ff;font-weight:700;min-height:22px;text-align:center}
+#pad{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;width:min(80vw,320px)}
+#pad button{font:inherit;font-weight:900;font-size:24px;padding:12px 0;border:0;border-radius:12px;background:#2f2080;color:#fff}#pad button.go{background:#4dff88;color:#0b0820}
+#pad.off{opacity:.3;pointer-events:none}
+</style></head><body>
+<div class="hud"><span>Digits <b id="s">3</b></span><span id="l">❤️❤️❤️</span><span>Best <b id="b">0</b></span></div>
+<div id="box"><div id="msg"></div><div id="num"></div><div id="bar"><div id="fill"></div></div><div id="pad" class="off"></div></div>
+<script>
+let len = 3, lives = 3, secret = '', entry = '', phase = 'idle', tleft = 0, tmax = 1;
+G.set('b', G.best('numbermemory'));
+const pad = document.getElementById('pad');
+['1', '2', '3', '4', '5', '6', '7', '8', '9', '⌫', '0', '✓'].forEach(k => { const b = document.createElement('button'); b.textContent = k; if (k === '✓') b.className = 'go'; b.onclick = () => key(k); pad.appendChild(b) });
+addEventListener('keydown', e => { if (/^\d$/.test(e.key)) key(e.key); if (e.key === 'Backspace') key('⌫'); if (e.key === 'Enter') key('✓') });
+function round() {
+  secret = String(1 + Math.random() * 9 | 0); while (secret.length < len) secret += Math.random() * 10 | 0;
+  entry = ''; phase = 'show'; tmax = tleft = 1 + len * .6; G.set('num', secret); G.set('msg', 'Remember this number!'); G.set('s', len); pad.classList.add('off');
+}
+function key(k) {
+  if (phase !== 'type') return;
+  if (k === '⌫') entry = entry.slice(0, -1); else if (k !== '✓') { if (entry.length < len + 2) entry += k }
+  else {
+    phase = 'wait'; pad.classList.add('off');
+    if (entry === secret) { G.set('msg', '✓ Correct!'); G.set('b', G.best('numbermemory', len)); G.beep(900, .2, 'triangle'); len++; return setTimeout(round, 800) }
+    lives--; G.set('l', '❤️'.repeat(Math.max(0, lives)) + '🖤'.repeat(3 - Math.max(0, lives))); G.beep(150, .3, 'sawtooth');
+    G.set('msg', 'It was ' + secret); G.set('num', entry || '—');
+    if (lives <= 0) return setTimeout(() => G.overlay('Game Over', 'Your best: ' + (len - 1) + ' digits.<br>Most people remember about 7.', 'Play again', start), 1300);
+    return setTimeout(round, 1600);
+  }
+  G.set('num', entry || ' ');
+}
+function start() { len = 3; lives = 3; G.set('l', '❤️❤️❤️'); round() }
+G.loop(dt => {
+  if (phase === 'show') { tleft -= dt; document.getElementById('fill').style.width = Math.max(0, tleft / tmax * 100) + '%'; if (tleft <= 0) { phase = 'type'; G.set('num', ' '); G.set('msg', 'Type the number, then tap ✓'); pad.classList.remove('off') } }
+  else document.getElementById('fill').style.width = '0%';
+});
+G.overlay('Number Memory', 'A number appears for a few seconds. Remember it!<br>Then type it in.<br>Each time you get it right, the number gets one digit longer.', 'Start', start);
+</script></body></html>

@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Unblock</title><script>
+// Shared helpers for every arcade game
+const G = (() => {
+  const st = document.createElement('style');
+  st.textContent = `
+html,body{margin:0;height:100%;background:#0b0820;color:#fff;font-family:system-ui,-apple-system,sans-serif;overflow:hidden;
+  touch-action:none;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
+.hud{position:fixed;top:12px;left:0;right:0;display:flex;justify-content:space-between;padding:0 18px;font-weight:700;
+  letter-spacing:1px;z-index:5;pointer-events:none;color:#cfe8ff}
+.hud b{color:#fff;font-size:20px;text-shadow:0 0 10px #3df5ff}
+.ov{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  background:rgba(8,5,25,.85);z-index:10;text-align:center;padding:20px}
+.ov h1{margin:0 0 10px;font-size:clamp(30px,8vw,52px);background:linear-gradient(90deg,#3df5ff,#ff3df0);
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.ov p{opacity:.88;line-height:1.6;max-width:340px;margin:6px 0}
+.ov button{margin-top:18px;font:inherit;font-weight:800;font-size:18px;padding:13px 34px;border:0;border-radius:999px;
+  background:linear-gradient(90deg,#3df5ff,#ff3df0);color:#0b0820;cursor:pointer}
+`;
+  document.head.appendChild(st);
+
+  let ac;
+  function beep(f, d = .08, type = 'sine', v = .1) {
+    try {
+      ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.type = type; o.frequency.value = f;
+      g.gain.setValueAtTime(v, ac.currentTime);
+      g.gain.exponentialRampToValueAtTime(.001, ac.currentTime + d);
+      o.connect(g).connect(ac.destination); o.start(); o.stop(ac.currentTime + d);
+    } catch (e) {}
+  }
+  function getBest(k) { try { return +localStorage.getItem('arc_' + k) || 0 } catch (e) { return 0 } }
+  function setBest(k, v) { try { localStorage.setItem('arc_' + k, v) } catch (e) {} }
+  // Save if higher (or lower when lowerIsBetter). Returns current best.
+  function best(k, v, lowerIsBetter) {
+    const b = getBest(k);
+    if (v != null && (!b || (lowerIsBetter ? v < b : v > b))) { setBest(k, v); return v }
+    return b;
+  }
+  function set(id, v) { const e = document.getElementById(id); if (e) e.textContent = v }
+
+  function overlay(title, html, btn, cb) {
+    let o = document.querySelector('.ov');
+    if (!o) { o = document.createElement('div'); o.className = 'ov'; document.body.appendChild(o) }
+    o.innerHTML = `<h1>${title}</h1><p>${html}</p><button>${btn}</button>`;
+    o.style.display = 'flex';
+    o.addEventListener('pointerdown', e => e.stopPropagation());
+    o.querySelector('button').onclick = e => { e.stopPropagation(); o.style.display = 'none'; beep(440, .08, 'triangle'); cb() };
+  }
+
+  // Swipe (touch/mouse) + arrow keys / WASD → 'L','R','U','D'
+  function swipe(cb) {
+    let sx = null, sy = null;
+    addEventListener('pointerdown', e => { sx = e.clientX; sy = e.clientY });
+    addEventListener('pointerup', e => {
+      if (sx == null) return;
+      const dx = e.clientX - sx, dy = e.clientY - sy; sx = null;
+      if (Math.max(Math.abs(dx), Math.abs(dy)) < 20) return;
+      cb(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'R' : 'L') : (dy > 0 ? 'D' : 'U'));
+    });
+    addEventListener('keydown', e => {
+      const m = { ArrowLeft: 'L', ArrowRight: 'R', ArrowUp: 'U', ArrowDown: 'D', a: 'L', d: 'R', w: 'U', s: 'D' }[e.key];
+      if (m) { e.preventDefault(); cb(m) }
+    });
+  }
+
+  // Full-screen crisp canvas. Returns {c, x, W, H}; set .onresize to react.
+  function canvas() {
+    const c = document.createElement('canvas');
+    c.style.cssText = 'display:block;width:100vw;height:100vh';
+    document.body.prepend(c);
+    const o = { c, x: c.getContext('2d'), W: 0, H: 0 };
+    function r() {
+      const d = Math.min(devicePixelRatio || 1, 2);
+      o.W = innerWidth; o.H = innerHeight; c.width = o.W * d; c.height = o.H * d;
+      o.x.setTransform(d, 0, 0, d, 0, 0); o.onresize && o.onresize();
+    }
+    addEventListener('resize', r); r();
+    return o;
+  }
+
+  // Game loop with delta time (seconds, capped)
+  function loop(fn) {
+    let last = performance.now();
+    function f(t) { const dt = Math.min(.05, (t - last) / 1000); last = t; fn(dt); requestAnimationFrame(f) }
+    requestAnimationFrame(f);
+  }
+
+  return { beep, getBest, setBest, best, set, overlay, swipe, canvas, loop };
+})();
+
+</script>
+<style>#rs{position:fixed;right:12px;bottom:12px;z-index:20;font:inherit;font-weight:700;font-size:14px;color:#0b0820;background:#3df5ff;border:0;border-radius:999px;padding:8px 14px}</style></head><body>
+<div class="hud"><span>Level <b id="s">1</b></span><span>Moves <b id="m">0</b> (best <b id="par">0</b>)</span><span>Top <b id="b">0</b></span></div>
+<button id="rs">↺ Retry</button>
+<script>
+const K = G.canvas(), x = K.x, N = 6, ROW = 2, COLS = ['#3df5ff', '#ffe35a', '#4dff88', '#b44dff', '#ff8a3d', '#3d6bff', '#ff9ad5', '#9aff3d', '#ffffff', '#c08a5a', '#5affd8'];
+let cars, startCars, par, moves = 0, level = 1, run = false, drag = null, cell, ox, oy, exitAnim = 0;
+G.set('b', G.best('unblock'));
+K.onresize = () => { cell = Math.floor(Math.min((K.W - 40) / N, (K.H - 170) / N)); ox = (K.W - cell * N) / 2 - 8; oy = (K.H - cell * N) / 2 + 10 }; K.onresize();
+// car: {r,c,len,h(orizontal)}; car 0 = red target, horizontal on ROW
+const occ = cs => { const g = Array(N * N).fill(-1); cs.forEach((v, i) => { for (let k = 0; k < v.len; k++) g[(v.r + (v.h ? 0 : k)) * N + v.c + (v.h ? k : 0)] = i }); return g };
+const key = cs => cs.map(v => v.h ? v.c : v.r).join(',');
+function solve(cs, limit = 25000) {
+  const seen = new Map([[key(cs), 0]]), q = [cs];
+  for (let qi = 0; qi < q.length; qi++) {
+    const s = q[qi], d = seen.get(key(s)); if (s[0].c + s[0].len === N) return d; if (seen.size > limit) return -1;
+    const g = occ(s);
+    s.forEach((v, i) => { for (const dir of [-1, 1]) { for (let st = 1; st < N; st++) {
+      const nc = v.h ? v.c + dir * st : v.c, nr = v.h ? v.r : v.r + dir * st, lead = dir < 0 ? (v.h ? nr * N + nc : nr * N + nc) : (v.h ? nr * N + nc + v.len - 1 : (nr + v.len - 1) * N + nc);
+      if (nc < 0 || nr < 0 || (v.h ? nc + v.len > N : nr + v.len > N) || g[lead] !== -1) break;
+      const ns = s.map(o => ({ ...o })); ns[i].c = nc; ns[i].r = nr; const k = key(ns); if (!seen.has(k)) { seen.set(k, d + 1); q.push(ns) } } } });
+  }
+  return -1;
+}
+function make() {
+  const want = Math.min(4 + level * 2, 22);
+  let best = null;
+  const t0 = performance.now();
+  for (let tries = 0; tries < 120 && performance.now() - t0 < 900; tries++) {
+    const cs = [{ r: ROW, c: Math.random() * 2 | 0, len: 2, h: true }], n = 7 + Math.min(level, 6);
+    for (let k = 0; k < n * 4 && cs.length < n; k++) {
+      const h = Math.random() < .5, len = Math.random() < .3 ? 3 : 2, r = Math.random() * (h ? N : N - len + 1) | 0, c = Math.random() * (h ? N - len + 1 : N) | 0;
+      if (h && r === ROW) continue; const v = { r, c, len, h }, g = occ(cs); let ok = true; for (let q = 0; q < len; q++) if (g[(r + (h ? 0 : q)) * N + c + (h ? q : 0)] !== -1) ok = false; if (ok) cs.push(v);
+    }
+    const d = solve(cs, 12000); if (d < 1) continue;
+    if (!best || Math.abs(d - want) < Math.abs(best[1] - want)) best = [cs, d]; if (d >= want - 1) break;
+  }
+  if (!best) best = [[{ r: ROW, c: 0, len: 2, h: true }, { r: 0, c: 3, len: 3, h: false }], 2];
+  startCars = best[0]; par = best[1]; reset(); G.set('s', level); G.set('par', par);
+}
+function reset() { cars = startCars.map(v => ({ ...v })); moves = 0; run = true; exitAnim = 0; G.set('m', 0) }
+document.getElementById('rs').onclick = () => { if (run) reset() };
+const at = (px, py) => { const c = Math.floor((px - ox) / cell), r = Math.floor((py - oy) / cell); if (r < 0 || c < 0 || r >= N || c >= N) return -1; return occ(cars)[r * N + c] };
+addEventListener('pointerdown', e => { if (!run) return; const i = at(e.clientX, e.clientY); if (i >= 0) drag = { i, sx: e.clientX, sy: e.clientY, o: { ...cars[i] }, off: 0 } });
+addEventListener('pointermove', e => {
+  if (!drag) return; const v = cars[drag.i], d = (v.h ? e.clientX - drag.sx : e.clientY - drag.sy) / cell, g = occ(cars);
+  let lo = 0, hi = 0; for (let st = 1; st < N; st++) { const nc = v.h ? drag.o.c - st : drag.o.c, nr = v.h ? drag.o.r : drag.o.r - st; if (nc < 0 || nr < 0) break; const cell2 = g[nr * N + nc]; if (cell2 !== -1 && cell2 !== drag.i) break; lo = -st }
+  for (let st = 1; st < N; st++) { const nc = v.h ? drag.o.c + drag.o.len - 1 + st : drag.o.c, nr = v.h ? drag.o.r : drag.o.r + drag.o.len - 1 + st; if (nc >= N || nr >= N) break; const cell2 = g[nr * N + nc]; if (cell2 !== -1 && cell2 !== drag.i) break; hi = st }
+  drag.off = Math.max(lo, Math.min(hi, d));
+});
+addEventListener('pointerup', () => {
+  if (!drag) return; const v = cars[drag.i], s = Math.round(drag.off); if (s) { if (v.h) v.c = drag.o.c + s; else v.r = drag.o.r + s; moves++; G.set('m', moves); G.beep(400, .05, 'triangle', .05) } drag = null;
+  if (cars[0].c + 2 === N) { run = false; exitAnim = .001; G.set('b', G.best('unblock', level)); G.beep(1000, .3, 'triangle'); setTimeout(() => G.overlay('Escaped! 🚗💨', (moves <= par ? 'Perfect! ' : '') + moves + ' moves (best possible ' + par + ').', 'Next level', () => { level++; make() }), 700) }
+});
+G.loop(dt => {
+  if (exitAnim) exitAnim += dt;
+  x.fillStyle = '#0b0820'; x.fillRect(0, 0, K.W, K.H); if (!cars) return;
+  x.fillStyle = '#1d1550'; x.fillRect(ox - 6, oy - 6, cell * N + 12, cell * N + 12); x.fillStyle = '#130d2c'; x.fillRect(ox, oy, cell * N, cell * N);
+  x.fillStyle = '#4dff88'; x.fillRect(ox + cell * N, oy + ROW * cell + 4, 10, cell - 8); x.font = `${cell * .4}px system-ui`; x.textAlign = 'center'; x.textBaseline = 'middle'; x.fillText('➜', ox + cell * N + 22, oy + (ROW + .5) * cell);
+  cars.forEach((v, i) => {
+    let px = ox + v.c * cell, py = oy + v.r * cell; if (drag && drag.i === i) { if (v.h) px = ox + (drag.o.c + drag.off) * cell; else py = oy + (drag.o.r + drag.off) * cell }
+    if (i === 0 && exitAnim) px += exitAnim * exitAnim * 1500;
+    const w = v.h ? cell * v.len : cell, h = v.h ? cell : cell * v.len, col = i === 0 ? '#ff4d6d' : COLS[i % COLS.length];
+    x.fillStyle = col; x.shadowColor = col; x.shadowBlur = i === 0 ? 16 : 6; x.beginPath(); x.roundRect ? x.roundRect(px + 4, py + 4, w - 8, h - 8, 10) : x.rect(px + 4, py + 4, w - 8, h - 8); x.fill(); x.shadowBlur = 0;
+    x.fillStyle = 'rgba(0,0,0,.25)'; if (v.h) x.fillRect(px + w * .3, py + 10, w * .4, h - 20); else x.fillRect(px + 10, py + h * .3, w - 20, h * .4);
+  });
+});
+make();
+G.overlay('Unblock', 'Slide the cars and trucks out of the way.<br>Cars only move forward and back in their own direction.<br>Get the red car out through the green exit on the right!', 'Start', () => {});
+</script></body></html>

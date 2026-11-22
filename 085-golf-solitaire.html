@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Golf Solitaire</title><script>
+// Shared helpers for every arcade game
+const G = (() => {
+  const st = document.createElement('style');
+  st.textContent = `
+html,body{margin:0;height:100%;background:#0b0820;color:#fff;font-family:system-ui,-apple-system,sans-serif;overflow:hidden;
+  touch-action:none;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
+.hud{position:fixed;top:12px;left:0;right:0;display:flex;justify-content:space-between;padding:0 18px;font-weight:700;
+  letter-spacing:1px;z-index:5;pointer-events:none;color:#cfe8ff}
+.hud b{color:#fff;font-size:20px;text-shadow:0 0 10px #3df5ff}
+.ov{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  background:rgba(8,5,25,.85);z-index:10;text-align:center;padding:20px}
+.ov h1{margin:0 0 10px;font-size:clamp(30px,8vw,52px);background:linear-gradient(90deg,#3df5ff,#ff3df0);
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.ov p{opacity:.88;line-height:1.6;max-width:340px;margin:6px 0}
+.ov button{margin-top:18px;font:inherit;font-weight:800;font-size:18px;padding:13px 34px;border:0;border-radius:999px;
+  background:linear-gradient(90deg,#3df5ff,#ff3df0);color:#0b0820;cursor:pointer}
+`;
+  document.head.appendChild(st);
+
+  let ac;
+  function beep(f, d = .08, type = 'sine', v = .1) {
+    try {
+      ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.type = type; o.frequency.value = f;
+      g.gain.setValueAtTime(v, ac.currentTime);
+      g.gain.exponentialRampToValueAtTime(.001, ac.currentTime + d);
+      o.connect(g).connect(ac.destination); o.start(); o.stop(ac.currentTime + d);
+    } catch (e) {}
+  }
+  function getBest(k) { try { return +localStorage.getItem('arc_' + k) || 0 } catch (e) { return 0 } }
+  function setBest(k, v) { try { localStorage.setItem('arc_' + k, v) } catch (e) {} }
+  // Save if higher (or lower when lowerIsBetter). Returns current best.
+  function best(k, v, lowerIsBetter) {
+    const b = getBest(k);
+    if (v != null && (!b || (lowerIsBetter ? v < b : v > b))) { setBest(k, v); return v }
+    return b;
+  }
+  function set(id, v) { const e = document.getElementById(id); if (e) e.textContent = v }
+
+  function overlay(title, html, btn, cb) {
+    let o = document.querySelector('.ov');
+    if (!o) { o = document.createElement('div'); o.className = 'ov'; document.body.appendChild(o) }
+    o.innerHTML = `<h1>${title}</h1><p>${html}</p><button>${btn}</button>`;
+    o.style.display = 'flex';
+    o.addEventListener('pointerdown', e => e.stopPropagation());
+    o.querySelector('button').onclick = e => { e.stopPropagation(); o.style.display = 'none'; beep(440, .08, 'triangle'); cb() };
+  }
+
+  // Swipe (touch/mouse) + arrow keys / WASD → 'L','R','U','D'
+  function swipe(cb) {
+    let sx = null, sy = null;
+    addEventListener('pointerdown', e => { sx = e.clientX; sy = e.clientY });
+    addEventListener('pointerup', e => {
+      if (sx == null) return;
+      const dx = e.clientX - sx, dy = e.clientY - sy; sx = null;
+      if (Math.max(Math.abs(dx), Math.abs(dy)) < 20) return;
+      cb(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'R' : 'L') : (dy > 0 ? 'D' : 'U'));
+    });
+    addEventListener('keydown', e => {
+      const m = { ArrowLeft: 'L', ArrowRight: 'R', ArrowUp: 'U', ArrowDown: 'D', a: 'L', d: 'R', w: 'U', s: 'D' }[e.key];
+      if (m) { e.preventDefault(); cb(m) }
+    });
+  }
+
+  // Full-screen crisp canvas. Returns {c, x, W, H}; set .onresize to react.
+  function canvas() {
+    const c = document.createElement('canvas');
+    c.style.cssText = 'display:block;width:100vw;height:100vh';
+    document.body.prepend(c);
+    const o = { c, x: c.getContext('2d'), W: 0, H: 0 };
+    function r() {
+      const d = Math.min(devicePixelRatio || 1, 2);
+      o.W = innerWidth; o.H = innerHeight; c.width = o.W * d; c.height = o.H * d;
+      o.x.setTransform(d, 0, 0, d, 0, 0); o.onresize && o.onresize();
+    }
+    addEventListener('resize', r); r();
+    return o;
+  }
+
+  // Game loop with delta time (seconds, capped)
+  function loop(fn) {
+    let last = performance.now();
+    function f(t) { const dt = Math.min(.05, (t - last) / 1000); last = t; fn(dt); requestAnimationFrame(f) }
+    requestAnimationFrame(f);
+  }
+
+  return { beep, getBest, setBest, best, set, overlay, swipe, canvas, loop };
+})();
+
+</script>
+<style>
+body{background:radial-gradient(ellipse at center,#0f5a36,#062a18)}
+#tab{position:fixed;top:56px;left:50%;transform:translateX(-50%);display:grid;grid-template-columns:repeat(7,1fr);gap:4px;width:min(96vw,460px)}
+.col{position:relative;height:calc(min(96vw,460px)/7*1.4 + 4*min(96vw,460px)/7*.42)}
+.card{position:absolute;left:0;right:0;aspect-ratio:5/7;border-radius:6px;background:#fff;color:#111;font-weight:900;font-size:clamp(12px,3.6vw,18px);padding:2px 4px;box-sizing:border-box;box-shadow:0 2px 4px rgba(0,0,0,.4);line-height:1.1}
+.card.red{color:#d81b4a}.card.top{cursor:pointer}.card.can{box-shadow:0 0 0 3px #ffe35a,0 0 12px #ffe35a}
+.card .mid{position:absolute;bottom:4px;right:6px;font-size:1.4em}
+#bot{position:fixed;bottom:62px;left:50%;transform:translateX(-50%);display:flex;gap:26px;align-items:center}
+#stock,#waste{position:relative;width:min(18vw,80px);aspect-ratio:5/7}
+#stock .card{background:repeating-linear-gradient(45deg,#3a1d8a,#3a1d8a 6px,#2a1460 6px,#2a1460 12px);border:2px solid #fff;cursor:pointer}
+#stock .n{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:900;font-size:20px;text-shadow:0 1px 4px #000}
+#msg{position:fixed;left:0;right:0;bottom:calc(62px + min(18vw,80px)*1.4 + 10px);text-align:center;color:#ffe35a;font-weight:800}
+</style></head><body>
+<div class="hud"><span>Cards left <b id="s">35</b></span><span>Best <b id="b">–</b></span></div>
+<div id="tab"></div><div id="msg"></div>
+<div id="bot"><div id="stock"></div><div id="waste"></div></div>
+<script>
+const V = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'], SU = ['♠', '♥', '♦', '♣'];
+let cols, stock, waste, done = false;
+const showBest = () => { const b = G.getBest('golfsol'); G.set('b', b ? (b - 1) + ' left' : '–') }; showBest(); // stored as left+1 so 0 is valid
+const cardHtml = c => `<span>${V[c.v]}${SU[c.s]}</span><span class="mid">${SU[c.s]}</span>`;
+const fits = c => { const w = waste[waste.length - 1]; return Math.abs(c.v - w.v) === 1 };
+function deal() { const d = []; for (let s = 0; s < 4; s++) for (let v = 0; v < 13; v++) d.push({ v, s }); d.sort(() => Math.random() - .5); cols = [...Array(7)].map(() => d.splice(0, 5)); waste = [d.pop()]; stock = d; done = false; render() }
+function render() {
+  const tab = document.getElementById('tab'); tab.innerHTML = ''; const cw = Math.min(innerWidth * .96, 460) / 7;
+  cols.forEach((col, i) => { const el = document.createElement('div'); el.className = 'col';
+    col.forEach((c, k) => { const d = document.createElement('div'); const top = k === col.length - 1; d.className = 'card' + (c.s === 1 || c.s === 2 ? ' red' : '') + (top ? ' top' : '') + (top && fits(c) ? ' can' : ''); d.style.top = k * cw * .42 + 'px'; d.innerHTML = cardHtml(c); if (top) d.onclick = () => play(i); el.appendChild(d) });
+    tab.appendChild(el) });
+  document.getElementById('stock').innerHTML = stock.length ? `<div class="card"></div><div class="n">${stock.length}</div>` : '<div class="n" style="opacity:.4">0</div>';
+  const w = waste[waste.length - 1]; document.getElementById('waste').innerHTML = `<div class="card ${w.s === 1 || w.s === 2 ? 'red' : ''}">${cardHtml(w)}</div>`;
+  const left = cols.reduce((a, c) => a + c.length, 0); G.set('s', left);
+  const any = cols.some(c => c.length && fits(c[c.length - 1]));
+  G.set('msg', left === 0 ? '' : any ? 'Tap a glowing card' : stock.length ? 'No moves — tap the deck' : '');
+  if (!done && (left === 0 || (!any && !stock.length))) {
+    done = true; const prev = G.getBest('golfsol'); if (!prev || left + 1 < prev) G.setBest('golfsol', left + 1); showBest();
+    G.beep(left === 0 ? 1000 : 300, .3, 'triangle');
+    setTimeout(() => G.overlay(left === 0 ? 'Cleared! 🏆' : 'No more moves', left === 0 ? 'You cleared every card!' : 'Cards left: ' + left + '. Fewer is better.', 'Deal again', deal), 600);
+  }
+}
+function play(i) { const c = cols[i][cols[i].length - 1]; if (done || !fits(c)) { G.beep(150, .08, 'sawtooth'); return } waste.push(cols[i].pop()); G.beep(600 + waste.length * 8, .05, 'triangle'); render() }
+document.getElementById('stock').onclick = () => { if (done || !stock.length) return; waste.push(stock.pop()); G.beep(400, .04, 'triangle'); render() };
+addEventListener('resize', () => cols && render());
+deal();
+G.overlay('Golf Solitaire', 'Move cards from the 7 columns onto the pile at the bottom.<br>A card can go on the pile if it is ONE higher or ONE lower (a 7 goes on a 6 or an 8).<br>Stuck? Tap the deck for a new card. Clear as many as you can!', 'Start', () => {});
+</script></body></html>

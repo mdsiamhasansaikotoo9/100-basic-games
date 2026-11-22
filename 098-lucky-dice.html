@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Lucky Dice</title><script>
+// Shared helpers for every arcade game
+const G = (() => {
+  const st = document.createElement('style');
+  st.textContent = `
+html,body{margin:0;height:100%;background:#0b0820;color:#fff;font-family:system-ui,-apple-system,sans-serif;overflow:hidden;
+  touch-action:none;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
+.hud{position:fixed;top:12px;left:0;right:0;display:flex;justify-content:space-between;padding:0 18px;font-weight:700;
+  letter-spacing:1px;z-index:5;pointer-events:none;color:#cfe8ff}
+.hud b{color:#fff;font-size:20px;text-shadow:0 0 10px #3df5ff}
+.ov{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  background:rgba(8,5,25,.85);z-index:10;text-align:center;padding:20px}
+.ov h1{margin:0 0 10px;font-size:clamp(30px,8vw,52px);background:linear-gradient(90deg,#3df5ff,#ff3df0);
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.ov p{opacity:.88;line-height:1.6;max-width:340px;margin:6px 0}
+.ov button{margin-top:18px;font:inherit;font-weight:800;font-size:18px;padding:13px 34px;border:0;border-radius:999px;
+  background:linear-gradient(90deg,#3df5ff,#ff3df0);color:#0b0820;cursor:pointer}
+`;
+  document.head.appendChild(st);
+
+  let ac;
+  function beep(f, d = .08, type = 'sine', v = .1) {
+    try {
+      ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.type = type; o.frequency.value = f;
+      g.gain.setValueAtTime(v, ac.currentTime);
+      g.gain.exponentialRampToValueAtTime(.001, ac.currentTime + d);
+      o.connect(g).connect(ac.destination); o.start(); o.stop(ac.currentTime + d);
+    } catch (e) {}
+  }
+  function getBest(k) { try { return +localStorage.getItem('arc_' + k) || 0 } catch (e) { return 0 } }
+  function setBest(k, v) { try { localStorage.setItem('arc_' + k, v) } catch (e) {} }
+  // Save if higher (or lower when lowerIsBetter). Returns current best.
+  function best(k, v, lowerIsBetter) {
+    const b = getBest(k);
+    if (v != null && (!b || (lowerIsBetter ? v < b : v > b))) { setBest(k, v); return v }
+    return b;
+  }
+  function set(id, v) { const e = document.getElementById(id); if (e) e.textContent = v }
+
+  function overlay(title, html, btn, cb) {
+    let o = document.querySelector('.ov');
+    if (!o) { o = document.createElement('div'); o.className = 'ov'; document.body.appendChild(o) }
+    o.innerHTML = `<h1>${title}</h1><p>${html}</p><button>${btn}</button>`;
+    o.style.display = 'flex';
+    o.addEventListener('pointerdown', e => e.stopPropagation());
+    o.querySelector('button').onclick = e => { e.stopPropagation(); o.style.display = 'none'; beep(440, .08, 'triangle'); cb() };
+  }
+
+  // Swipe (touch/mouse) + arrow keys / WASD → 'L','R','U','D'
+  function swipe(cb) {
+    let sx = null, sy = null;
+    addEventListener('pointerdown', e => { sx = e.clientX; sy = e.clientY });
+    addEventListener('pointerup', e => {
+      if (sx == null) return;
+      const dx = e.clientX - sx, dy = e.clientY - sy; sx = null;
+      if (Math.max(Math.abs(dx), Math.abs(dy)) < 20) return;
+      cb(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'R' : 'L') : (dy > 0 ? 'D' : 'U'));
+    });
+    addEventListener('keydown', e => {
+      const m = { ArrowLeft: 'L', ArrowRight: 'R', ArrowUp: 'U', ArrowDown: 'D', a: 'L', d: 'R', w: 'U', s: 'D' }[e.key];
+      if (m) { e.preventDefault(); cb(m) }
+    });
+  }
+
+  // Full-screen crisp canvas. Returns {c, x, W, H}; set .onresize to react.
+  function canvas() {
+    const c = document.createElement('canvas');
+    c.style.cssText = 'display:block;width:100vw;height:100vh';
+    document.body.prepend(c);
+    const o = { c, x: c.getContext('2d'), W: 0, H: 0 };
+    function r() {
+      const d = Math.min(devicePixelRatio || 1, 2);
+      o.W = innerWidth; o.H = innerHeight; c.width = o.W * d; c.height = o.H * d;
+      o.x.setTransform(d, 0, 0, d, 0, 0); o.onresize && o.onresize();
+    }
+    addEventListener('resize', r); r();
+    return o;
+  }
+
+  // Game loop with delta time (seconds, capped)
+  function loop(fn) {
+    let last = performance.now();
+    function f(t) { const dt = Math.min(.05, (t - last) / 1000); last = t; fn(dt); requestAnimationFrame(f) }
+    requestAnimationFrame(f);
+  }
+
+  return { beep, getBest, setBest, best, set, overlay, swipe, canvas, loop };
+})();
+
+</script>
+<style>
+body{background:radial-gradient(ellipse at center,#5a1030,#1a0510)}
+#box{position:fixed;inset:56px 0 56px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;padding:0 10px}
+#dice{display:flex;gap:8px}
+.die{width:clamp(50px,16vw,72px);aspect-ratio:1;border-radius:14px;background:#fff;display:grid;grid-template:repeat(3,1fr)/repeat(3,1fr);padding:7px;box-sizing:border-box;cursor:pointer;transition:transform .15s;box-shadow:0 4px 0 #bbb}
+.die i{width:70%;aspect-ratio:1;border-radius:50%;background:#111;align-self:center;justify-self:center;visibility:hidden}
+.die i.on{visibility:visible}
+.die.held{background:#ffe35a;box-shadow:0 4px 0 #b08a1a;transform:translateY(-8px)}
+.die.roll{animation:sp .4s}@keyframes sp{50%{transform:rotate(180deg) scale(.8)}}
+#hand{font-size:24px;font-weight:900;color:#ffe35a;min-height:30px;text-align:center}
+#info{color:#cfe8ff;font-size:14px;text-align:center}
+#btns{display:flex;gap:10px}#btns button{font:inherit;font-weight:900;font-size:18px;padding:12px 22px;border:0;border-radius:999px;background:#3df5ff;color:#0b0820}#btns button:disabled{opacity:.35}
+#tbl{font-size:12px;color:#cfe8ff;opacity:.75;text-align:center;line-height:1.6;max-width:380px}
+</style></head><body>
+<div class="hud"><span>Score <b id="s">0</b></span><span>Round <b id="r">1</b>/8</span><span>Best <b id="b">0</b></span></div>
+<div id="box"><div id="info"></div><div id="dice"></div><div id="hand"></div>
+<div id="btns"><button id="roll">🎲 Roll</button><button id="keep">✓ Score it</button></div>
+<div id="tbl">Five of a kind 50 · Four 40 · Big straight 40 · Full house 30 · Small straight 25 · Three 20 · Two pairs 15 · Pair 5 · Nothing 0<br><b>+ the total of all dice</b></div></div>
+<script>
+const PIPS = { 1: [4], 2: [0, 8], 3: [0, 4, 8], 4: [0, 2, 6, 8], 5: [0, 2, 4, 6, 8], 6: [0, 2, 3, 5, 6, 8] };
+let dice = [1, 1, 1, 1, 1], held = [0, 0, 0, 0, 0], rolls = 0, round = 1, score = 0, busy = false;
+G.set('b', G.best('dice'));
+const dEl = document.getElementById('dice');
+for (let i = 0; i < 5; i++) { const d = document.createElement('div'); d.className = 'die'; d.innerHTML = '<i></i>'.repeat(9); d.onclick = () => { if (rolls > 0 && rolls < 3 && !busy) { held[i] ^= 1; G.beep(500, .03, 'triangle'); render() } }; dEl.appendChild(d) }
+function hand(ds) {
+  const c = [0, 0, 0, 0, 0, 0, 0]; ds.forEach(v => c[v]++); const counts = c.slice(1).filter(Boolean).sort((a, b) => b - a), s = new Set(ds), str = k => [[1, 2, 3, 4, 5], [2, 3, 4, 5, 6], [1, 2, 3, 4], [2, 3, 4, 5], [3, 4, 5, 6]].filter(r => r.length === k).some(r => r.every(v => s.has(v)));
+  if (counts[0] === 5) return ['Five of a kind!', 50]; if (counts[0] === 4) return ['Four of a kind', 40]; if (str(5)) return ['Big straight', 40];
+  if (counts[0] === 3 && counts[1] === 2) return ['Full house', 30]; if (str(4)) return ['Small straight', 25]; if (counts[0] === 3) return ['Three of a kind', 20];
+  if (counts[0] === 2 && counts[1] === 2) return ['Two pairs', 15]; if (counts[0] === 2) return ['Pair', 5]; return ['Nothing', 0];
+}
+function render() {
+  [...dEl.children].forEach((d, i) => { d.classList.toggle('held', !!held[i]); [...d.children].forEach((p, k) => p.classList.toggle('on', PIPS[dice[i]].includes(k))) });
+  document.getElementById('roll').disabled = rolls >= 3 || busy; document.getElementById('keep').disabled = rolls === 0 || busy;
+  document.getElementById('roll').textContent = '🎲 Roll' + (rolls ? ` (${3 - rolls} left)` : '');
+  const [n, p] = hand(dice); G.set('hand', rolls ? n + ' → ' + (p + dice.reduce((a, b) => a + b)) + ' pts' : '');
+  G.set('info', rolls === 0 ? 'Tap Roll to start this round' : rolls < 3 ? 'Tap dice to hold them (yellow), then roll the rest' : 'No rolls left — score it!');
+}
+function roll() {
+  if (rolls >= 3 || busy) return; busy = true; rolls++; G.beep(300, .1, 'square', .05);
+  [...dEl.children].forEach((d, i) => { if (!held[i]) { d.classList.remove('roll'); void d.offsetWidth; d.classList.add('roll') } });
+  let k = 0; const iv = setInterval(() => { dice = dice.map((v, i) => held[i] ? v : 1 + (Math.random() * 6 | 0)); render(); if (++k >= 6) { clearInterval(iv); busy = false; render(); const [, p] = hand(dice); if (p >= 30) G.beep(1000, .2, 'triangle') } }, 60);
+}
+function keep() {
+  if (!rolls || busy) return; const [n, p] = hand(dice), pts = p + dice.reduce((a, b) => a + b); score += pts; G.set('s', score); G.beep(800, .15, 'triangle');
+  if (round >= 8) { G.set('b', G.best('dice', score)); return G.overlay('Game over 🎲', 'Final score: ' + score, 'Play again', start) }
+  round++; G.set('r', round); rolls = 0; held = [0, 0, 0, 0, 0]; render();
+}
+document.getElementById('roll').onclick = roll; document.getElementById('keep').onclick = keep;
+function start() { round = 1; score = 0; rolls = 0; held = [0, 0, 0, 0, 0]; G.set('s', 0); G.set('r', 1); render() }
+start();
+G.overlay('Lucky Dice', 'Roll 5 dice up to 3 times per round.<br>After each roll, tap dice to HOLD them, then roll the rest.<br>Make the best hand you can, then tap Score it. 8 rounds.', 'Start', () => {});
+</script></body></html>

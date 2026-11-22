@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Asteroids</title><script>
+// Shared helpers for every arcade game
+const G = (() => {
+  const st = document.createElement('style');
+  st.textContent = `
+html,body{margin:0;height:100%;background:#0b0820;color:#fff;font-family:system-ui,-apple-system,sans-serif;overflow:hidden;
+  touch-action:none;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
+.hud{position:fixed;top:12px;left:0;right:0;display:flex;justify-content:space-between;padding:0 18px;font-weight:700;
+  letter-spacing:1px;z-index:5;pointer-events:none;color:#cfe8ff}
+.hud b{color:#fff;font-size:20px;text-shadow:0 0 10px #3df5ff}
+.ov{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  background:rgba(8,5,25,.85);z-index:10;text-align:center;padding:20px}
+.ov h1{margin:0 0 10px;font-size:clamp(30px,8vw,52px);background:linear-gradient(90deg,#3df5ff,#ff3df0);
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.ov p{opacity:.88;line-height:1.6;max-width:340px;margin:6px 0}
+.ov button{margin-top:18px;font:inherit;font-weight:800;font-size:18px;padding:13px 34px;border:0;border-radius:999px;
+  background:linear-gradient(90deg,#3df5ff,#ff3df0);color:#0b0820;cursor:pointer}
+`;
+  document.head.appendChild(st);
+
+  let ac;
+  function beep(f, d = .08, type = 'sine', v = .1) {
+    try {
+      ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.type = type; o.frequency.value = f;
+      g.gain.setValueAtTime(v, ac.currentTime);
+      g.gain.exponentialRampToValueAtTime(.001, ac.currentTime + d);
+      o.connect(g).connect(ac.destination); o.start(); o.stop(ac.currentTime + d);
+    } catch (e) {}
+  }
+  function getBest(k) { try { return +localStorage.getItem('arc_' + k) || 0 } catch (e) { return 0 } }
+  function setBest(k, v) { try { localStorage.setItem('arc_' + k, v) } catch (e) {} }
+  // Save if higher (or lower when lowerIsBetter). Returns current best.
+  function best(k, v, lowerIsBetter) {
+    const b = getBest(k);
+    if (v != null && (!b || (lowerIsBetter ? v < b : v > b))) { setBest(k, v); return v }
+    return b;
+  }
+  function set(id, v) { const e = document.getElementById(id); if (e) e.textContent = v }
+
+  function overlay(title, html, btn, cb) {
+    let o = document.querySelector('.ov');
+    if (!o) { o = document.createElement('div'); o.className = 'ov'; document.body.appendChild(o) }
+    o.innerHTML = `<h1>${title}</h1><p>${html}</p><button>${btn}</button>`;
+    o.style.display = 'flex';
+    o.addEventListener('pointerdown', e => e.stopPropagation());
+    o.querySelector('button').onclick = e => { e.stopPropagation(); o.style.display = 'none'; beep(440, .08, 'triangle'); cb() };
+  }
+
+  // Swipe (touch/mouse) + arrow keys / WASD → 'L','R','U','D'
+  function swipe(cb) {
+    let sx = null, sy = null;
+    addEventListener('pointerdown', e => { sx = e.clientX; sy = e.clientY });
+    addEventListener('pointerup', e => {
+      if (sx == null) return;
+      const dx = e.clientX - sx, dy = e.clientY - sy; sx = null;
+      if (Math.max(Math.abs(dx), Math.abs(dy)) < 20) return;
+      cb(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'R' : 'L') : (dy > 0 ? 'D' : 'U'));
+    });
+    addEventListener('keydown', e => {
+      const m = { ArrowLeft: 'L', ArrowRight: 'R', ArrowUp: 'U', ArrowDown: 'D', a: 'L', d: 'R', w: 'U', s: 'D' }[e.key];
+      if (m) { e.preventDefault(); cb(m) }
+    });
+  }
+
+  // Full-screen crisp canvas. Returns {c, x, W, H}; set .onresize to react.
+  function canvas() {
+    const c = document.createElement('canvas');
+    c.style.cssText = 'display:block;width:100vw;height:100vh';
+    document.body.prepend(c);
+    const o = { c, x: c.getContext('2d'), W: 0, H: 0 };
+    function r() {
+      const d = Math.min(devicePixelRatio || 1, 2);
+      o.W = innerWidth; o.H = innerHeight; c.width = o.W * d; c.height = o.H * d;
+      o.x.setTransform(d, 0, 0, d, 0, 0); o.onresize && o.onresize();
+    }
+    addEventListener('resize', r); r();
+    return o;
+  }
+
+  // Game loop with delta time (seconds, capped)
+  function loop(fn) {
+    let last = performance.now();
+    function f(t) { const dt = Math.min(.05, (t - last) / 1000); last = t; fn(dt); requestAnimationFrame(f) }
+    requestAnimationFrame(f);
+  }
+
+  return { beep, getBest, setBest, best, set, overlay, swipe, canvas, loop };
+})();
+
+</script>
+<style>
+#pad{position:fixed;left:0;right:0;bottom:56px;display:flex;justify-content:space-between;padding:0 12px;z-index:6;pointer-events:none}
+#pad div{display:flex;gap:8px}
+#pad button{pointer-events:auto;font:inherit;font-weight:900;font-size:22px;width:62px;height:62px;border:0;border-radius:50%;background:rgba(47,32,128,.8);color:#fff;touch-action:none}
+#pad button.on{background:#3df5ff;color:#0b0820}
+</style></head><body>
+<div class="hud"><span>Score <b id="s">0</b></span><span>Lives <b id="l">3</b></span><span>Best <b id="b">0</b></span></div>
+<div id="pad"><div><button data-k="L">⟲</button><button data-k="R">⟳</button></div><div><button data-k="T">🔥</button><button data-k="F">💥</button></div></div>
+<script>
+const K = G.canvas(), x = K.x;
+let ship = null, rocks = [], bullets = [], parts = [], keys = {}, score = 0, lives = 3, wave = 1, run = false, fireT = 0, inv = 0, t = 0;
+G.set('b', G.best('asteroids'));
+document.querySelectorAll('#pad button').forEach(b => { const on = e => { e.preventDefault(); e.stopPropagation(); keys[b.dataset.k] = 1; b.classList.add('on') }, off = () => { keys[b.dataset.k] = 0; b.classList.remove('on') }; b.addEventListener('pointerdown', on); ['pointerup', 'pointerleave', 'pointercancel'].forEach(ev => b.addEventListener(ev, off)) });
+const KM = { ArrowLeft: 'L', ArrowRight: 'R', ArrowUp: 'T', ' ': 'F' };
+addEventListener('keydown', e => { if (KM[e.key]) { e.preventDefault(); keys[KM[e.key]] = 1 } }); addEventListener('keyup', e => { if (KM[e.key]) keys[KM[e.key]] = 0 });
+const wrap = o => { if (o.x < -30) o.x += K.W + 60; if (o.x > K.W + 30) o.x -= K.W + 60; if (o.y < -30) o.y += K.H + 60; if (o.y > K.H + 30) o.y -= K.H + 60 };
+function rock(r, px, py) { if (px == null) { do { px = Math.random() * K.W; py = Math.random() * K.H } while (ship && Math.hypot(px - ship.x, py - ship.y) < 160) } const a = Math.random() * 7, sp = 30 + Math.random() * 40 + (50 - r) + wave * 4; rocks.push({ x: px, y: py, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, r, rot: 0, vr: (Math.random() - .5) * 2, pts: [...Array(10)].map(() => .75 + Math.random() * .35) }) }
+function newWave() { for (let i = 0; i < 2 + wave; i++) rock(44) }
+function start() { ship = { x: K.W / 2, y: K.H / 2, vx: 0, vy: 0, a: -Math.PI / 2 }; rocks = []; bullets = []; score = 0; lives = 3; wave = 1; inv = 2; run = true; G.set('s', 0); G.set('l', 3); newWave() }
+function boom(px, py, c, n = 14) { for (let i = 0; i < n; i++) { const a = Math.random() * 7, v = Math.random() * 160; parts.push({ x: px, y: py, vx: Math.cos(a) * v, vy: Math.sin(a) * v, life: 1, c }) } }
+G.loop(dt => {
+  t += dt; for (const p of parts) { p.x += p.vx * dt; p.y += p.vy * dt; p.life -= dt * 1.5 } parts = parts.filter(p => p.life > 0);
+  if (run) {
+    inv = Math.max(0, inv - dt);
+    if (keys.L) ship.a -= 4 * dt; if (keys.R) ship.a += 4 * dt;
+    if (keys.T) { ship.vx += Math.cos(ship.a) * 260 * dt; ship.vy += Math.sin(ship.a) * 260 * dt; if (Math.random() < .5) parts.push({ x: ship.x - Math.cos(ship.a) * 12, y: ship.y - Math.sin(ship.a) * 12, vx: -Math.cos(ship.a) * 100, vy: -Math.sin(ship.a) * 100, life: .3, c: '#ff8a3d' }) }
+    const f = Math.pow(.55, dt); ship.vx *= f; ship.vy *= f; ship.x += ship.vx * dt; ship.y += ship.vy * dt; wrap(ship);
+    fireT -= dt; if (keys.F && fireT <= 0) { fireT = .22; bullets.push({ x: ship.x + Math.cos(ship.a) * 14, y: ship.y + Math.sin(ship.a) * 14, vx: Math.cos(ship.a) * 520 + ship.vx, vy: Math.sin(ship.a) * 520 + ship.vy, life: 1.1 }); G.beep(1100, .03, 'square', .03) }
+    for (const b of bullets) { b.x += b.vx * dt; b.y += b.vy * dt; b.life -= dt; wrap(b) } bullets = bullets.filter(b => b.life > 0);
+    const born = [];
+    for (const r of rocks) {
+      r.x += r.vx * dt; r.y += r.vy * dt; r.rot += r.vr * dt; wrap(r);
+      for (const b of bullets) if (b.life > 0 && Math.hypot(b.x - r.x, b.y - r.y) < r.r) { b.life = 0; r.dead = 1; score += r.r > 40 ? 20 : r.r > 25 ? 50 : 100; G.set('s', score); boom(r.x, r.y, '#ffb13d'); G.beep(120 + r.r * 3, .12, 'triangle', .08); if (r.r > 20) { born.push([r.r * .55, r.x, r.y]); born.push([r.r * .55, r.x, r.y]) } break }
+      if (!r.dead && !inv && Math.hypot(r.x - ship.x, r.y - ship.y) < r.r + 10) {
+        r.dead = 1; boom(ship.x, ship.y, '#3df5ff', 30); lives--; G.set('l', lives); G.beep(90, .5, 'sawtooth', .15);
+        if (lives <= 0) { run = false; G.set('b', G.best('asteroids', score)); setTimeout(() => G.overlay('Game Over', 'Score: ' + score + ' · Wave ' + wave, 'Play again', start), 800) }
+        else { ship.x = K.W / 2; ship.y = K.H / 2; ship.vx = ship.vy = 0; inv = 2.5 }
+      }
+    }
+    born.forEach(([r, px, py]) => rock(r, px, py)); rocks = rocks.filter(r => !r.dead);
+    if (run && !rocks.length) { wave++; inv = 1.5; G.beep(900, .3, 'triangle'); newWave() }
+  }
+  x.fillStyle = '#05030f'; x.fillRect(0, 0, K.W, K.H);
+  for (let i = 0; i < 60; i++) { x.fillStyle = 'rgba(200,220,255,.35)'; x.fillRect((i * 137.5) % K.W, (i * 89.3) % K.H, 1.5, 1.5) }
+  x.strokeStyle = '#ddd'; x.lineWidth = 2;
+  for (const r of rocks) { x.beginPath(); r.pts.forEach((k, i) => { const a = r.rot + i / 10 * Math.PI * 2; x.lineTo(r.x + Math.cos(a) * r.r * k, r.y + Math.sin(a) * r.r * k) }); x.closePath(); x.stroke() }
+  x.fillStyle = '#ffe35a'; for (const b of bullets) { x.beginPath(); x.arc(b.x, b.y, 2.5, 0, 7); x.fill() }
+  if (ship && run && !(inv && (t * 10 | 0) % 2)) { x.save(); x.translate(ship.x, ship.y); x.rotate(ship.a); x.strokeStyle = '#3df5ff'; x.shadowColor = '#3df5ff'; x.shadowBlur = 10; x.lineWidth = 2.5; x.beginPath(); x.moveTo(16, 0); x.lineTo(-11, -10); x.lineTo(-6, 0); x.lineTo(-11, 10); x.closePath(); x.stroke(); x.restore(); x.shadowBlur = 0 }
+  for (const p of parts) { x.globalAlpha = Math.max(0, p.life); x.fillStyle = p.c; x.fillRect(p.x - 2, p.y - 2, 4, 4) } x.globalAlpha = 1;
+});
+G.overlay('Asteroids', 'Use the buttons: ⟲ ⟳ turn, 🔥 thrust, 💥 fire (hold).<br>Fly off one edge and you come back on the other side.<br>Big rocks split into smaller ones.', 'Start', start);
+</script></body></html>

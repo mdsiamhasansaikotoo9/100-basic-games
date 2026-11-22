@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Gomoku</title><script>
+// Shared helpers for every arcade game
+const G = (() => {
+  const st = document.createElement('style');
+  st.textContent = `
+html,body{margin:0;height:100%;background:#0b0820;color:#fff;font-family:system-ui,-apple-system,sans-serif;overflow:hidden;
+  touch-action:none;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
+.hud{position:fixed;top:12px;left:0;right:0;display:flex;justify-content:space-between;padding:0 18px;font-weight:700;
+  letter-spacing:1px;z-index:5;pointer-events:none;color:#cfe8ff}
+.hud b{color:#fff;font-size:20px;text-shadow:0 0 10px #3df5ff}
+.ov{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  background:rgba(8,5,25,.85);z-index:10;text-align:center;padding:20px}
+.ov h1{margin:0 0 10px;font-size:clamp(30px,8vw,52px);background:linear-gradient(90deg,#3df5ff,#ff3df0);
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.ov p{opacity:.88;line-height:1.6;max-width:340px;margin:6px 0}
+.ov button{margin-top:18px;font:inherit;font-weight:800;font-size:18px;padding:13px 34px;border:0;border-radius:999px;
+  background:linear-gradient(90deg,#3df5ff,#ff3df0);color:#0b0820;cursor:pointer}
+`;
+  document.head.appendChild(st);
+
+  let ac;
+  function beep(f, d = .08, type = 'sine', v = .1) {
+    try {
+      ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.type = type; o.frequency.value = f;
+      g.gain.setValueAtTime(v, ac.currentTime);
+      g.gain.exponentialRampToValueAtTime(.001, ac.currentTime + d);
+      o.connect(g).connect(ac.destination); o.start(); o.stop(ac.currentTime + d);
+    } catch (e) {}
+  }
+  function getBest(k) { try { return +localStorage.getItem('arc_' + k) || 0 } catch (e) { return 0 } }
+  function setBest(k, v) { try { localStorage.setItem('arc_' + k, v) } catch (e) {} }
+  // Save if higher (or lower when lowerIsBetter). Returns current best.
+  function best(k, v, lowerIsBetter) {
+    const b = getBest(k);
+    if (v != null && (!b || (lowerIsBetter ? v < b : v > b))) { setBest(k, v); return v }
+    return b;
+  }
+  function set(id, v) { const e = document.getElementById(id); if (e) e.textContent = v }
+
+  function overlay(title, html, btn, cb) {
+    let o = document.querySelector('.ov');
+    if (!o) { o = document.createElement('div'); o.className = 'ov'; document.body.appendChild(o) }
+    o.innerHTML = `<h1>${title}</h1><p>${html}</p><button>${btn}</button>`;
+    o.style.display = 'flex';
+    o.addEventListener('pointerdown', e => e.stopPropagation());
+    o.querySelector('button').onclick = e => { e.stopPropagation(); o.style.display = 'none'; beep(440, .08, 'triangle'); cb() };
+  }
+
+  // Swipe (touch/mouse) + arrow keys / WASD → 'L','R','U','D'
+  function swipe(cb) {
+    let sx = null, sy = null;
+    addEventListener('pointerdown', e => { sx = e.clientX; sy = e.clientY });
+    addEventListener('pointerup', e => {
+      if (sx == null) return;
+      const dx = e.clientX - sx, dy = e.clientY - sy; sx = null;
+      if (Math.max(Math.abs(dx), Math.abs(dy)) < 20) return;
+      cb(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'R' : 'L') : (dy > 0 ? 'D' : 'U'));
+    });
+    addEventListener('keydown', e => {
+      const m = { ArrowLeft: 'L', ArrowRight: 'R', ArrowUp: 'U', ArrowDown: 'D', a: 'L', d: 'R', w: 'U', s: 'D' }[e.key];
+      if (m) { e.preventDefault(); cb(m) }
+    });
+  }
+
+  // Full-screen crisp canvas. Returns {c, x, W, H}; set .onresize to react.
+  function canvas() {
+    const c = document.createElement('canvas');
+    c.style.cssText = 'display:block;width:100vw;height:100vh';
+    document.body.prepend(c);
+    const o = { c, x: c.getContext('2d'), W: 0, H: 0 };
+    function r() {
+      const d = Math.min(devicePixelRatio || 1, 2);
+      o.W = innerWidth; o.H = innerHeight; c.width = o.W * d; c.height = o.H * d;
+      o.x.setTransform(d, 0, 0, d, 0, 0); o.onresize && o.onresize();
+    }
+    addEventListener('resize', r); r();
+    return o;
+  }
+
+  // Game loop with delta time (seconds, capped)
+  function loop(fn) {
+    let last = performance.now();
+    function f(t) { const dt = Math.min(.05, (t - last) / 1000); last = t; fn(dt); requestAnimationFrame(f) }
+    requestAnimationFrame(f);
+  }
+
+  return { beep, getBest, setBest, best, set, overlay, swipe, canvas, loop };
+})();
+
+</script>
+<style>#msg{position:fixed;left:0;right:0;bottom:70px;text-align:center;font-weight:700;color:#cfe8ff}</style></head><body>
+<div class="hud"><span>You <b id="w">0</b></span><span>Draw <b id="d">0</b></span><span>CPU <b id="l">0</b></span></div>
+<div id="msg"></div>
+<script>
+const K = G.canvas(), x = K.x, N = 11;
+let B, busy, last = -1, winLine = null, st = { w: 0, d: 0, l: 0 }, cell, ox, oy;
+K.onresize = () => { cell = Math.min(K.W - 20, K.H - 160) / N; ox = (K.W - cell * N) / 2; oy = (K.H - cell * N) / 2 }; K.onresize();
+const D4 = [[0, 1], [1, 0], [1, 1], [1, -1]];
+function line5(p) { for (let i = 0; i < N * N; i++) { if (B[i] !== p) continue; const r = i / N | 0, c = i % N; for (const [dr, dc] of D4) { const cells = []; for (let k = 0; k < 5; k++) { const rr = r + dr * k, cc = c + dc * k; if (rr < 0 || rr >= N || cc < 0 || cc >= N || B[rr * N + cc] !== p) break; cells.push(rr * N + cc) } if (cells.length === 5) return cells } } return null }
+function cellScore(i, p) {
+  const r = i / N | 0, c = i % N; let total = 0;
+  for (const [dr, dc] of D4) {
+    let cnt = 1, open = 0;
+    for (const s of [1, -1]) { let k = 1; while (true) { const rr = r + dr * k * s, cc = c + dc * k * s; if (rr < 0 || rr >= N || cc < 0 || cc >= N) break; const v = B[rr * N + cc]; if (v === p) { cnt++; k++ } else { if (!v) open++; break } } }
+    total += cnt >= 5 ? 100000 : cnt === 4 ? (open === 2 ? 10000 : open ? 1200 : 0) : cnt === 3 ? (open === 2 ? 800 : open ? 100 : 0) : cnt === 2 ? (open === 2 ? 60 : open ? 10 : 0) : open;
+  }
+  return total;
+}
+function cpuMove() {
+  let best = -1, pick = (N * N / 2) | 0;
+  for (let i = 0; i < N * N; i++) { if (B[i]) continue; const s = cellScore(i, 2) * 1.1 + cellScore(i, 1) + Math.random() * 5; if (s > best) { best = s; pick = i } }
+  return pick;
+}
+function end(p) {
+  busy = true; if (p === 1) st.w++; else if (p === 2) st.l++; else st.d++; G.set('w', st.w); G.set('d', st.d); G.set('l', st.l);
+  G.beep(p === 1 ? 880 : 150, .3, p === 1 ? 'triangle' : 'sawtooth');
+  setTimeout(() => G.overlay(p === 1 ? 'You win! 🎉' : p === 2 ? 'CPU wins' : 'Draw', 'You ' + st.w + ' – ' + st.l + ' CPU', 'Play again', newGame), 900);
+}
+addEventListener('pointerdown', e => {
+  if (busy) return; const c = Math.floor((e.clientX - ox) / cell), r = Math.floor((e.clientY - oy) / cell); if (r < 0 || c < 0 || r >= N || c >= N) return;
+  const i = r * N + c; if (B[i]) return; B[i] = 1; last = i; G.beep(520, .05, 'triangle');
+  if ((winLine = line5(1))) return end(1); if (B.every(Boolean)) return end(0);
+  busy = true; G.set('msg', 'CPU is thinking…');
+  setTimeout(() => { const m = cpuMove(); B[m] = 2; last = m; G.beep(330, .05, 'triangle'); if ((winLine = line5(2))) return end(2); if (B.every(Boolean)) return end(0); busy = false; G.set('msg', 'Your turn') }, 400);
+});
+function newGame() { B = Array(N * N).fill(0); last = -1; winLine = null; busy = false; G.set('msg', 'Your turn — get 5 in a row') }
+G.loop(() => {
+  x.fillStyle = '#0b0820'; x.fillRect(0, 0, K.W, K.H); if (!B) return;
+  x.fillStyle = '#d9a95a'; x.fillRect(ox, oy, cell * N, cell * N);
+  x.strokeStyle = 'rgba(60,30,0,.6)'; x.lineWidth = 1; for (let k = 0; k < N; k++) { x.beginPath(); x.moveTo(ox + cell / 2, oy + (k + .5) * cell); x.lineTo(ox + cell * (N - .5), oy + (k + .5) * cell); x.moveTo(ox + (k + .5) * cell, oy + cell / 2); x.lineTo(ox + (k + .5) * cell, oy + cell * (N - .5)); x.stroke() }
+  B.forEach((v, i) => { if (!v) return; const cx = ox + (i % N + .5) * cell, cy = oy + ((i / N | 0) + .5) * cell; x.fillStyle = v === 1 ? '#111' : '#f4f4f4'; x.beginPath(); x.arc(cx, cy, cell * .42, 0, 7); x.fill(); if (i === last) { x.fillStyle = '#ff4d6d'; x.beginPath(); x.arc(cx, cy, cell * .12, 0, 7); x.fill() } });
+  if (winLine) { x.strokeStyle = '#4dff88'; x.lineWidth = 5; x.beginPath(); const a = winLine[0], b = winLine[4]; x.moveTo(ox + (a % N + .5) * cell, oy + ((a / N | 0) + .5) * cell); x.lineTo(ox + (b % N + .5) * cell, oy + ((b / N | 0) + .5) * cell); x.stroke() }
+});
+newGame();
+G.overlay('Gomoku', 'Take turns placing stones. You are black.<br>Be the first to get 5 in a row — across, down, or diagonal.<br>Block the CPU when it has 3 or 4!', 'Start', () => {});
+</script></body></html>

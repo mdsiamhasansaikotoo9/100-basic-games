@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>2-Player Pong</title><script>
+// Shared helpers for every arcade game
+const G = (() => {
+  const st = document.createElement('style');
+  st.textContent = `
+html,body{margin:0;height:100%;background:#0b0820;color:#fff;font-family:system-ui,-apple-system,sans-serif;overflow:hidden;
+  touch-action:none;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
+.hud{position:fixed;top:12px;left:0;right:0;display:flex;justify-content:space-between;padding:0 18px;font-weight:700;
+  letter-spacing:1px;z-index:5;pointer-events:none;color:#cfe8ff}
+.hud b{color:#fff;font-size:20px;text-shadow:0 0 10px #3df5ff}
+.ov{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  background:rgba(8,5,25,.85);z-index:10;text-align:center;padding:20px}
+.ov h1{margin:0 0 10px;font-size:clamp(30px,8vw,52px);background:linear-gradient(90deg,#3df5ff,#ff3df0);
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.ov p{opacity:.88;line-height:1.6;max-width:340px;margin:6px 0}
+.ov button{margin-top:18px;font:inherit;font-weight:800;font-size:18px;padding:13px 34px;border:0;border-radius:999px;
+  background:linear-gradient(90deg,#3df5ff,#ff3df0);color:#0b0820;cursor:pointer}
+`;
+  document.head.appendChild(st);
+
+  let ac;
+  function beep(f, d = .08, type = 'sine', v = .1) {
+    try {
+      ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.type = type; o.frequency.value = f;
+      g.gain.setValueAtTime(v, ac.currentTime);
+      g.gain.exponentialRampToValueAtTime(.001, ac.currentTime + d);
+      o.connect(g).connect(ac.destination); o.start(); o.stop(ac.currentTime + d);
+    } catch (e) {}
+  }
+  function getBest(k) { try { return +localStorage.getItem('arc_' + k) || 0 } catch (e) { return 0 } }
+  function setBest(k, v) { try { localStorage.setItem('arc_' + k, v) } catch (e) {} }
+  // Save if higher (or lower when lowerIsBetter). Returns current best.
+  function best(k, v, lowerIsBetter) {
+    const b = getBest(k);
+    if (v != null && (!b || (lowerIsBetter ? v < b : v > b))) { setBest(k, v); return v }
+    return b;
+  }
+  function set(id, v) { const e = document.getElementById(id); if (e) e.textContent = v }
+
+  function overlay(title, html, btn, cb) {
+    let o = document.querySelector('.ov');
+    if (!o) { o = document.createElement('div'); o.className = 'ov'; document.body.appendChild(o) }
+    o.innerHTML = `<h1>${title}</h1><p>${html}</p><button>${btn}</button>`;
+    o.style.display = 'flex';
+    o.addEventListener('pointerdown', e => e.stopPropagation());
+    o.querySelector('button').onclick = e => { e.stopPropagation(); o.style.display = 'none'; beep(440, .08, 'triangle'); cb() };
+  }
+
+  // Swipe (touch/mouse) + arrow keys / WASD → 'L','R','U','D'
+  function swipe(cb) {
+    let sx = null, sy = null;
+    addEventListener('pointerdown', e => { sx = e.clientX; sy = e.clientY });
+    addEventListener('pointerup', e => {
+      if (sx == null) return;
+      const dx = e.clientX - sx, dy = e.clientY - sy; sx = null;
+      if (Math.max(Math.abs(dx), Math.abs(dy)) < 20) return;
+      cb(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'R' : 'L') : (dy > 0 ? 'D' : 'U'));
+    });
+    addEventListener('keydown', e => {
+      const m = { ArrowLeft: 'L', ArrowRight: 'R', ArrowUp: 'U', ArrowDown: 'D', a: 'L', d: 'R', w: 'U', s: 'D' }[e.key];
+      if (m) { e.preventDefault(); cb(m) }
+    });
+  }
+
+  // Full-screen crisp canvas. Returns {c, x, W, H}; set .onresize to react.
+  function canvas() {
+    const c = document.createElement('canvas');
+    c.style.cssText = 'display:block;width:100vw;height:100vh';
+    document.body.prepend(c);
+    const o = { c, x: c.getContext('2d'), W: 0, H: 0 };
+    function r() {
+      const d = Math.min(devicePixelRatio || 1, 2);
+      o.W = innerWidth; o.H = innerHeight; c.width = o.W * d; c.height = o.H * d;
+      o.x.setTransform(d, 0, 0, d, 0, 0); o.onresize && o.onresize();
+    }
+    addEventListener('resize', r); r();
+    return o;
+  }
+
+  // Game loop with delta time (seconds, capped)
+  function loop(fn) {
+    let last = performance.now();
+    function f(t) { const dt = Math.min(.05, (t - last) / 1000); last = t; fn(dt); requestAnimationFrame(f) }
+    requestAnimationFrame(f);
+  }
+
+  return { beep, getBest, setBest, best, set, overlay, swipe, canvas, loop };
+})();
+
+</script>
+<style>.hud{display:none}</style></head><body>
+<script>
+const K = G.canvas(), x = K.x, WIN = 7;
+let P = [null, null], ball, sc = [0, 0], run = false, wait = 0, owner = {};
+const PW = () => Math.max(70, K.W * .24);
+function serve(dir) { ball = { x: K.W / 2, y: K.H / 2, vx: (Math.random() - .5) * 240, vy: dir * K.H * .42, r: 9 }; wait = 1 }
+function start() { P = [{ x: K.W / 2 }, { x: K.W / 2 }]; sc = [0, 0]; serve(Math.random() < .5 ? 1 : -1); run = true }
+const side = y => y > K.H / 2 ? 0 : 1; // 0 = bottom player, 1 = top player
+addEventListener('pointerdown', e => { owner[e.pointerId] = side(e.clientY); if (P[0]) P[owner[e.pointerId]].x = e.clientX });
+addEventListener('pointermove', e => { const s = owner[e.pointerId]; if (s != null && P[0]) P[s].x = e.clientX });
+addEventListener('pointerup', e => delete owner[e.pointerId]); addEventListener('pointercancel', e => delete owner[e.pointerId]);
+const keys = {}; addEventListener('keydown', e => keys[e.key] = 1); addEventListener('keyup', e => keys[e.key] = 0);
+function hit(p, dirOut) { const off = Math.max(-1, Math.min(1, (ball.x - p.x) / (PW() / 2))), sp = Math.min(Math.hypot(ball.vx, ball.vy) * 1.06, K.H * 1.2); ball.vx = Math.sin(off) * sp; ball.vy = dirOut * Math.cos(off) * sp; G.beep(dirOut < 0 ? 440 : 330, .05, 'square', .05) }
+function point(w) {
+  sc[w]++; G.beep(800, .15, 'triangle');
+  if (sc[w] >= WIN) { run = false; G.overlay((w ? 'Top' : 'Bottom') + ' player wins! 🏆', 'Bottom ' + sc[0] + ' – ' + sc[1] + ' Top', 'Rematch', start) } else serve(w ? 1 : -1);
+}
+G.loop(dt => {
+  if (run) {
+    if (keys.a) P[0].x -= 600 * dt; if (keys.d) P[0].x += 600 * dt; if (keys.ArrowLeft) P[1].x -= 600 * dt; if (keys.ArrowRight) P[1].x += 600 * dt;
+    P.forEach(p => p.x = Math.max(PW() / 2, Math.min(K.W - PW() / 2, p.x)));
+    if (wait > 0) wait -= dt;
+    else {
+      const b = ball; b.x += b.vx * dt; b.y += b.vy * dt;
+      if (b.x < b.r) { b.x = b.r; b.vx = Math.abs(b.vx) } if (b.x > K.W - b.r) { b.x = K.W - b.r; b.vx = -Math.abs(b.vx) }
+      const by = K.H - 50, ty = 50;
+      if (b.vy > 0 && b.y + b.r >= by && b.y - b.r <= by + 14 && Math.abs(b.x - P[0].x) < PW() / 2 + b.r) { b.y = by - b.r; hit(P[0], -1) }
+      if (b.vy < 0 && b.y - b.r <= ty && b.y + b.r >= ty - 14 && Math.abs(b.x - P[1].x) < PW() / 2 + b.r) { b.y = ty + b.r; hit(P[1], 1) }
+      if (b.y < -20) point(0); else if (b.y > K.H + 20) point(1);
+    }
+  }
+  x.fillStyle = '#0b0820'; x.fillRect(0, 0, K.W, K.H);
+  x.fillStyle = 'rgba(61,245,255,.06)'; x.fillRect(0, K.H / 2, K.W, K.H / 2); x.fillStyle = 'rgba(255,61,240,.06)'; x.fillRect(0, 0, K.W, K.H / 2);
+  x.strokeStyle = 'rgba(207,232,255,.25)'; x.setLineDash([10, 10]); x.beginPath(); x.moveTo(0, K.H / 2); x.lineTo(K.W, K.H / 2); x.stroke(); x.setLineDash([]);
+  x.font = '900 60px system-ui'; x.textAlign = 'center'; x.textBaseline = 'middle'; x.fillStyle = 'rgba(255,255,255,.12)'; x.fillText(sc[0], K.W / 2, K.H * .72);
+  x.save(); x.translate(K.W / 2, K.H * .28); x.rotate(Math.PI); x.fillText(sc[1], 0, 0); x.restore();
+  if (!P[0]) return;
+  x.shadowBlur = 16; x.shadowColor = x.fillStyle = '#3df5ff'; x.fillRect(P[0].x - PW() / 2, K.H - 50, PW(), 14);
+  x.shadowColor = x.fillStyle = '#ff3df0'; x.fillRect(P[1].x - PW() / 2, 36, PW(), 14);
+  x.shadowColor = x.fillStyle = '#fff'; x.beginPath(); x.arc(ball.x, ball.y, ball.r, 0, 7); x.fill(); x.shadowBlur = 0;
+});
+G.overlay('2-Player Pong', 'Two players, one phone! Lay it flat between you.<br>Bottom player drags in the bottom half, top player in the top half.<br>First to 7 wins. (Keyboard: A/D vs ←/→)', 'Start', start);
+</script></body></html>

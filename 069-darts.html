@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Darts</title><script>
+// Shared helpers for every arcade game
+const G = (() => {
+  const st = document.createElement('style');
+  st.textContent = `
+html,body{margin:0;height:100%;background:#0b0820;color:#fff;font-family:system-ui,-apple-system,sans-serif;overflow:hidden;
+  touch-action:none;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
+.hud{position:fixed;top:12px;left:0;right:0;display:flex;justify-content:space-between;padding:0 18px;font-weight:700;
+  letter-spacing:1px;z-index:5;pointer-events:none;color:#cfe8ff}
+.hud b{color:#fff;font-size:20px;text-shadow:0 0 10px #3df5ff}
+.ov{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  background:rgba(8,5,25,.85);z-index:10;text-align:center;padding:20px}
+.ov h1{margin:0 0 10px;font-size:clamp(30px,8vw,52px);background:linear-gradient(90deg,#3df5ff,#ff3df0);
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.ov p{opacity:.88;line-height:1.6;max-width:340px;margin:6px 0}
+.ov button{margin-top:18px;font:inherit;font-weight:800;font-size:18px;padding:13px 34px;border:0;border-radius:999px;
+  background:linear-gradient(90deg,#3df5ff,#ff3df0);color:#0b0820;cursor:pointer}
+`;
+  document.head.appendChild(st);
+
+  let ac;
+  function beep(f, d = .08, type = 'sine', v = .1) {
+    try {
+      ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.type = type; o.frequency.value = f;
+      g.gain.setValueAtTime(v, ac.currentTime);
+      g.gain.exponentialRampToValueAtTime(.001, ac.currentTime + d);
+      o.connect(g).connect(ac.destination); o.start(); o.stop(ac.currentTime + d);
+    } catch (e) {}
+  }
+  function getBest(k) { try { return +localStorage.getItem('arc_' + k) || 0 } catch (e) { return 0 } }
+  function setBest(k, v) { try { localStorage.setItem('arc_' + k, v) } catch (e) {} }
+  // Save if higher (or lower when lowerIsBetter). Returns current best.
+  function best(k, v, lowerIsBetter) {
+    const b = getBest(k);
+    if (v != null && (!b || (lowerIsBetter ? v < b : v > b))) { setBest(k, v); return v }
+    return b;
+  }
+  function set(id, v) { const e = document.getElementById(id); if (e) e.textContent = v }
+
+  function overlay(title, html, btn, cb) {
+    let o = document.querySelector('.ov');
+    if (!o) { o = document.createElement('div'); o.className = 'ov'; document.body.appendChild(o) }
+    o.innerHTML = `<h1>${title}</h1><p>${html}</p><button>${btn}</button>`;
+    o.style.display = 'flex';
+    o.addEventListener('pointerdown', e => e.stopPropagation());
+    o.querySelector('button').onclick = e => { e.stopPropagation(); o.style.display = 'none'; beep(440, .08, 'triangle'); cb() };
+  }
+
+  // Swipe (touch/mouse) + arrow keys / WASD → 'L','R','U','D'
+  function swipe(cb) {
+    let sx = null, sy = null;
+    addEventListener('pointerdown', e => { sx = e.clientX; sy = e.clientY });
+    addEventListener('pointerup', e => {
+      if (sx == null) return;
+      const dx = e.clientX - sx, dy = e.clientY - sy; sx = null;
+      if (Math.max(Math.abs(dx), Math.abs(dy)) < 20) return;
+      cb(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'R' : 'L') : (dy > 0 ? 'D' : 'U'));
+    });
+    addEventListener('keydown', e => {
+      const m = { ArrowLeft: 'L', ArrowRight: 'R', ArrowUp: 'U', ArrowDown: 'D', a: 'L', d: 'R', w: 'U', s: 'D' }[e.key];
+      if (m) { e.preventDefault(); cb(m) }
+    });
+  }
+
+  // Full-screen crisp canvas. Returns {c, x, W, H}; set .onresize to react.
+  function canvas() {
+    const c = document.createElement('canvas');
+    c.style.cssText = 'display:block;width:100vw;height:100vh';
+    document.body.prepend(c);
+    const o = { c, x: c.getContext('2d'), W: 0, H: 0 };
+    function r() {
+      const d = Math.min(devicePixelRatio || 1, 2);
+      o.W = innerWidth; o.H = innerHeight; c.width = o.W * d; c.height = o.H * d;
+      o.x.setTransform(d, 0, 0, d, 0, 0); o.onresize && o.onresize();
+    }
+    addEventListener('resize', r); r();
+    return o;
+  }
+
+  // Game loop with delta time (seconds, capped)
+  function loop(fn) {
+    let last = performance.now();
+    function f(t) { const dt = Math.min(.05, (t - last) / 1000); last = t; fn(dt); requestAnimationFrame(f) }
+    requestAnimationFrame(f);
+  }
+
+  return { beep, getBest, setBest, best, set, overlay, swipe, canvas, loop };
+})();
+
+</script></head><body>
+<div class="hud"><span>Score <b id="s">0</b></span><span>Round <b id="r">1</b>/5 · Dart <b id="d">1</b>/3</span><span>Best <b id="b">0</b></span></div>
+<script>
+const K = G.canvas(), x = K.x, NUMS = [20, 1, 18, 4, 13, 6, 10, 15, 2, 17, 3, 19, 7, 16, 8, 11, 14, 9, 12, 5];
+let darts = [], score = 0, round = 1, dart = 1, run = false, t = 0, msg = null, flying = null, ph = Math.random() * 10;
+G.set('b', G.best('darts'));
+const C = () => ({ x: K.W / 2, y: K.H * .44, r: Math.min(K.W * .44, K.H * .3) });
+function start() { darts = []; score = 0; round = 1; dart = 1; run = true; G.set('s', 0); G.set('r', 1); G.set('d', 1) }
+function aim() { const c = C(), wob = c.r * (.25 + round * .07); return { x: c.x + Math.sin(t * 1.9 + ph) * wob + Math.sin(t * 4.3) * wob * .25, y: c.y + Math.cos(t * 1.4 + ph * 2) * wob + Math.sin(t * 3.7 + 1) * wob * .25 } }
+function scoreAt(px, py) {
+  const c = C(), dx = px - c.x, dy = py - c.y, d = Math.hypot(dx, dy) / c.r; if (d > 1) return [0, 'Miss'];
+  if (d < .05) return [50, 'BULLSEYE!']; if (d < .12) return [25, 'Bull 25'];
+  let a = Math.atan2(dx, -dy) * 180 / Math.PI; a = (a + 360 + 9) % 360; const n = NUMS[a / 18 | 0];
+  if (d > .92 && d <= 1) return [n * 2, 'Double ' + n]; if (d > .55 && d < .63) return [n * 3, 'Triple ' + n]; return [n, String(n)];
+}
+addEventListener('pointerdown', () => {
+  if (!run || flying) return; const a = aim(); flying = { x: a.x, y: K.H + 20, tx: a.x, ty: a.y, t: 0 }; G.beep(400, .05, 'triangle');
+});
+G.loop(dt => {
+  t += dt; if (msg) { msg.life -= dt; if (msg.life <= 0) msg = null }
+  if (flying) {
+    flying.t += dt * 4; const p = Math.min(1, flying.t);
+    if (p >= 1) {
+      const [pts, label] = scoreAt(flying.tx, flying.ty); darts.push({ x: flying.tx, y: flying.ty }); score += pts; G.set('s', score); msg = { t: label + (pts ? ' +' + pts : ''), life: 1 };
+      G.beep(pts >= 50 ? 1200 : pts ? 300 + pts * 10 : 150, .12, pts ? 'triangle' : 'sawtooth'); flying = null;
+      dart++;
+      if (dart > 3) { dart = 1; round++; setTimeout(() => { darts = [] }, 900) }
+      if (round > 5) { run = false; round = 5; dart = 3; G.set('b', G.best('darts', score)); setTimeout(() => G.overlay('Game over 🎯', 'Total: ' + score + ' (15 darts)', 'Play again', start), 900) }
+      G.set('r', round); G.set('d', dart);
+    }
+  }
+  x.fillStyle = '#1a0f2e'; x.fillRect(0, 0, K.W, K.H);
+  const c = C(); x.fillStyle = '#111'; x.beginPath(); x.arc(c.x, c.y, c.r * 1.15, 0, 7); x.fill();
+  for (let i = 0; i < 20; i++) {
+    const a0 = (i * 18 - 9 - 90) * Math.PI / 180, a1 = a0 + Math.PI / 10, dark = i % 2 === 0;
+    const ring = (r0, r1, col) => { x.fillStyle = col; x.beginPath(); x.arc(c.x, c.y, c.r * r1, a0, a1); x.arc(c.x, c.y, c.r * r0, a1, a0, true); x.fill() };
+    ring(.12, .55, dark ? '#1a1a1a' : '#f0e0c0'); ring(.55, .63, dark ? '#d81b4a' : '#13a05a'); ring(.63, .92, dark ? '#1a1a1a' : '#f0e0c0'); ring(.92, 1, dark ? '#d81b4a' : '#13a05a');
+    const ma = (i * 18 - 90) * Math.PI / 180; x.fillStyle = '#fff'; x.font = `700 ${c.r * .1}px system-ui`; x.textAlign = 'center'; x.textBaseline = 'middle'; x.fillText(NUMS[i], c.x + Math.cos(ma) * c.r * 1.07, c.y + Math.sin(ma) * c.r * 1.07);
+  }
+  x.fillStyle = '#13a05a'; x.beginPath(); x.arc(c.x, c.y, c.r * .12, 0, 7); x.fill(); x.fillStyle = '#d81b4a'; x.beginPath(); x.arc(c.x, c.y, c.r * .05, 0, 7); x.fill();
+  for (const d of darts) { x.fillStyle = '#ffe35a'; x.beginPath(); x.arc(d.x, d.y, 4, 0, 7); x.fill(); x.strokeStyle = '#ff3df0'; x.lineWidth = 3; x.beginPath(); x.moveTo(d.x, d.y); x.lineTo(d.x + 8, d.y + 16); x.stroke() }
+  if (flying) { const p = Math.min(1, flying.t), y = flying.y + (flying.ty - flying.y) * p, s = 1.6 - p * .6; x.strokeStyle = '#ff3df0'; x.lineWidth = 3 * s; x.beginPath(); x.moveTo(flying.tx, y); x.lineTo(flying.tx + 8 * s, y + 16 * s); x.stroke() }
+  if (run && !flying) { const a = aim(); x.strokeStyle = '#3df5ff'; x.lineWidth = 2; x.shadowColor = '#3df5ff'; x.shadowBlur = 8; x.beginPath(); x.arc(a.x, a.y, 10, 0, 7); x.moveTo(a.x - 16, a.y); x.lineTo(a.x + 16, a.y); x.moveTo(a.x, a.y - 16); x.lineTo(a.x, a.y + 16); x.stroke(); x.shadowBlur = 0 }
+  if (msg) { x.globalAlpha = Math.min(1, msg.life); x.fillStyle = '#ffe35a'; x.font = '900 28px system-ui'; x.textAlign = 'center'; x.fillText(msg.t, K.W / 2, K.H * .86); x.globalAlpha = 1 }
+});
+G.overlay('Darts', 'The blue crosshair wobbles around. Tap to throw when it\'s where you want.<br>Thin outer ring = double, middle thin ring = triple, center = 50.<br>5 rounds of 3 darts. The wobble grows each round.', 'Start', start);
+</script></body></html>

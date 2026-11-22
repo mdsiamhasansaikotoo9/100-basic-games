@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Lunar Lander</title><script>
+// Shared helpers for every arcade game
+const G = (() => {
+  const st = document.createElement('style');
+  st.textContent = `
+html,body{margin:0;height:100%;background:#0b0820;color:#fff;font-family:system-ui,-apple-system,sans-serif;overflow:hidden;
+  touch-action:none;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
+.hud{position:fixed;top:12px;left:0;right:0;display:flex;justify-content:space-between;padding:0 18px;font-weight:700;
+  letter-spacing:1px;z-index:5;pointer-events:none;color:#cfe8ff}
+.hud b{color:#fff;font-size:20px;text-shadow:0 0 10px #3df5ff}
+.ov{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  background:rgba(8,5,25,.85);z-index:10;text-align:center;padding:20px}
+.ov h1{margin:0 0 10px;font-size:clamp(30px,8vw,52px);background:linear-gradient(90deg,#3df5ff,#ff3df0);
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.ov p{opacity:.88;line-height:1.6;max-width:340px;margin:6px 0}
+.ov button{margin-top:18px;font:inherit;font-weight:800;font-size:18px;padding:13px 34px;border:0;border-radius:999px;
+  background:linear-gradient(90deg,#3df5ff,#ff3df0);color:#0b0820;cursor:pointer}
+`;
+  document.head.appendChild(st);
+
+  let ac;
+  function beep(f, d = .08, type = 'sine', v = .1) {
+    try {
+      ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.type = type; o.frequency.value = f;
+      g.gain.setValueAtTime(v, ac.currentTime);
+      g.gain.exponentialRampToValueAtTime(.001, ac.currentTime + d);
+      o.connect(g).connect(ac.destination); o.start(); o.stop(ac.currentTime + d);
+    } catch (e) {}
+  }
+  function getBest(k) { try { return +localStorage.getItem('arc_' + k) || 0 } catch (e) { return 0 } }
+  function setBest(k, v) { try { localStorage.setItem('arc_' + k, v) } catch (e) {} }
+  // Save if higher (or lower when lowerIsBetter). Returns current best.
+  function best(k, v, lowerIsBetter) {
+    const b = getBest(k);
+    if (v != null && (!b || (lowerIsBetter ? v < b : v > b))) { setBest(k, v); return v }
+    return b;
+  }
+  function set(id, v) { const e = document.getElementById(id); if (e) e.textContent = v }
+
+  function overlay(title, html, btn, cb) {
+    let o = document.querySelector('.ov');
+    if (!o) { o = document.createElement('div'); o.className = 'ov'; document.body.appendChild(o) }
+    o.innerHTML = `<h1>${title}</h1><p>${html}</p><button>${btn}</button>`;
+    o.style.display = 'flex';
+    o.addEventListener('pointerdown', e => e.stopPropagation());
+    o.querySelector('button').onclick = e => { e.stopPropagation(); o.style.display = 'none'; beep(440, .08, 'triangle'); cb() };
+  }
+
+  // Swipe (touch/mouse) + arrow keys / WASD → 'L','R','U','D'
+  function swipe(cb) {
+    let sx = null, sy = null;
+    addEventListener('pointerdown', e => { sx = e.clientX; sy = e.clientY });
+    addEventListener('pointerup', e => {
+      if (sx == null) return;
+      const dx = e.clientX - sx, dy = e.clientY - sy; sx = null;
+      if (Math.max(Math.abs(dx), Math.abs(dy)) < 20) return;
+      cb(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'R' : 'L') : (dy > 0 ? 'D' : 'U'));
+    });
+    addEventListener('keydown', e => {
+      const m = { ArrowLeft: 'L', ArrowRight: 'R', ArrowUp: 'U', ArrowDown: 'D', a: 'L', d: 'R', w: 'U', s: 'D' }[e.key];
+      if (m) { e.preventDefault(); cb(m) }
+    });
+  }
+
+  // Full-screen crisp canvas. Returns {c, x, W, H}; set .onresize to react.
+  function canvas() {
+    const c = document.createElement('canvas');
+    c.style.cssText = 'display:block;width:100vw;height:100vh';
+    document.body.prepend(c);
+    const o = { c, x: c.getContext('2d'), W: 0, H: 0 };
+    function r() {
+      const d = Math.min(devicePixelRatio || 1, 2);
+      o.W = innerWidth; o.H = innerHeight; c.width = o.W * d; c.height = o.H * d;
+      o.x.setTransform(d, 0, 0, d, 0, 0); o.onresize && o.onresize();
+    }
+    addEventListener('resize', r); r();
+    return o;
+  }
+
+  // Game loop with delta time (seconds, capped)
+  function loop(fn) {
+    let last = performance.now();
+    function f(t) { const dt = Math.min(.05, (t - last) / 1000); last = t; fn(dt); requestAnimationFrame(f) }
+    requestAnimationFrame(f);
+  }
+
+  return { beep, getBest, setBest, best, set, overlay, swipe, canvas, loop };
+})();
+
+</script>
+<style>
+#pad{position:fixed;left:0;right:0;bottom:56px;display:flex;justify-content:space-between;padding:0 14px;z-index:6;pointer-events:none}
+#pad button{pointer-events:auto;font:inherit;font-weight:900;font-size:24px;width:72px;height:64px;border:0;border-radius:18px;background:rgba(47,32,128,.85);color:#fff;touch-action:none}
+#pad button.on{background:#3df5ff;color:#0b0820}#th{width:110px!important}
+</style></head><body>
+<div class="hud"><span>Landings <b id="s">0</b></span><span>Fuel <b id="f">100</b></span><span>Best <b id="b">0</b></span></div>
+<div id="pad"><button data-k="L">⟲</button><button data-k="T" id="th">🔥</button><button data-k="R">⟳</button></div>
+<script>
+const K = G.canvas(), x = K.x, GRAV = 40;
+let ship = null, ground = [], pad, keys = {}, run = false, fuel = 100, score = 0, level = 1, msg = null, parts = [], t = 0;
+G.set('b', G.best('lander'));
+document.querySelectorAll('#pad button').forEach(b => {
+  const on = e => { e.preventDefault(); e.stopPropagation(); keys[b.dataset.k] = 1; b.classList.add('on') }, off = () => { keys[b.dataset.k] = 0; b.classList.remove('on') };
+  b.addEventListener('pointerdown', on); b.addEventListener('pointerup', off); b.addEventListener('pointerleave', off); b.addEventListener('pointercancel', off);
+});
+addEventListener('keydown', e => { const m = { ArrowLeft: 'L', ArrowRight: 'R', ArrowUp: 'T', ' ': 'T' }[e.key]; if (m) { e.preventDefault(); keys[m] = 1 } });
+addEventListener('keyup', e => { const m = { ArrowLeft: 'L', ArrowRight: 'R', ArrowUp: 'T', ' ': 'T' }[e.key]; if (m) keys[m] = 0 });
+function terrain() {
+  const n = 24, base = K.H - 150, pw = Math.max(3, 6 - level), pi = 2 + Math.random() * (n - pw - 4) | 0; ground = [];
+  let h = base - Math.random() * 80;
+  for (let i = 0; i <= n; i++) { if (i > pi && i <= pi + pw) { } else h = Math.max(K.H * .45, Math.min(base, h + (Math.random() - .5) * (60 + level * 10))); ground.push({ x: i * K.W / n, y: h }) }
+  pad = { x1: ground[pi].x, x2: ground[pi + pw].x, y: ground[pi].y };
+  for (let i = pi; i <= pi + pw; i++) ground[i].y = pad.y;
+}
+function launch() { terrain(); ship = { x: K.W * (.2 + Math.random() * .6), y: 70, vx: (Math.random() - .5) * 40, vy: 0, a: 0, dead: 0, landed: 0 }; fuel = Math.max(40, 100 - (level - 1) * 6); G.set('f', Math.ceil(fuel)) }
+function start() { score = 0; level = 1; run = true; G.set('s', 0); launch() }
+function groundY(px) { for (let i = 0; i < ground.length - 1; i++) if (px >= ground[i].x && px <= ground[i + 1].x) { const a = ground[i], b = ground[i + 1]; return a.y + (b.y - a.y) * (px - a.x) / (b.x - a.x) } return K.H }
+function crash(why) { ship.dead = 1; run = false; for (let i = 0; i < 40; i++) { const a = Math.random() * 7, v = Math.random() * 160; parts.push({ x: ship.x, y: ship.y, vx: Math.cos(a) * v, vy: Math.sin(a) * v - 60, life: 1.4 }) } G.beep(80, .6, 'sawtooth', .15); G.set('b', G.best('lander', score)); setTimeout(() => G.overlay('Crashed! 💥', why + '<br>Safe landings: ' + score, 'Play again', start), 900) }
+G.loop(dt => {
+  t += dt; if (msg) { msg.life -= dt; if (msg.life <= 0) msg = null }
+  for (const p of parts) { p.vy += 60 * dt; p.x += p.vx * dt; p.y += p.vy * dt; p.life -= dt } parts = parts.filter(p => p.life > 0);
+  if (run && ship && !ship.landed) {
+    if (keys.L) ship.a -= 2.6 * dt; if (keys.R) ship.a += 2.6 * dt; ship.a = Math.max(-1.6, Math.min(1.6, ship.a));
+    const thrust = keys.T && fuel > 0;
+    if (thrust) { fuel = Math.max(0, fuel - 12 * dt); ship.vx += Math.sin(ship.a) * 95 * dt; ship.vy -= Math.cos(ship.a) * 95 * dt; G.set('f', Math.ceil(fuel)); if (Math.random() < .5) parts.push({ x: ship.x - Math.sin(ship.a) * 14, y: ship.y + Math.cos(ship.a) * 14, vx: -Math.sin(ship.a) * 120 + (Math.random() - .5) * 40, vy: Math.cos(ship.a) * 120, life: .4, fire: 1 }) }
+    ship.vy += GRAV * dt; ship.x += ship.vx * dt; ship.y += ship.vy * dt;
+    if (ship.x < 0) ship.x += K.W; if (ship.x > K.W) ship.x -= K.W;
+    if (ship.y + 12 >= groundY(ship.x)) {
+      const onPad = ship.x - 10 >= pad.x1 && ship.x + 10 <= pad.x2, soft = ship.vy < 45 && Math.abs(ship.vx) < 25, upright = Math.abs(ship.a) < .3;
+      if (onPad && soft && upright) {
+        ship.landed = 1; ship.y = pad.y - 12; score++; level++; G.set('s', score); G.set('b', G.best('lander', score)); msg = { t: 'Perfect landing! 🚀', life: 1.6 }; G.beep(900, .3, 'triangle');
+        setTimeout(() => { if (run) launch() }, 1700);
+      } else crash(!onPad ? 'You missed the landing pad.' : !upright ? 'You landed tilted.' : 'You came down too fast.');
+    }
+  }
+  x.fillStyle = '#05030f'; x.fillRect(0, 0, K.W, K.H);
+  for (let i = 0; i < 70; i++) { x.fillStyle = 'rgba(220,230,255,.5)'; x.fillRect((i * 97.3) % K.W, (i * 53.1) % (K.H * .6), 1.5, 1.5) }
+  if (ground.length) {
+    x.fillStyle = '#2a2a3a'; x.beginPath(); x.moveTo(0, K.H); ground.forEach(p => x.lineTo(p.x, p.y)); x.lineTo(K.W, K.H); x.fill();
+    x.strokeStyle = '#cfe8ff'; x.lineWidth = 2; x.beginPath(); ground.forEach((p, i) => i ? x.lineTo(p.x, p.y) : x.moveTo(p.x, p.y)); x.stroke();
+    x.strokeStyle = '#4dff88'; x.lineWidth = 5; x.shadowColor = '#4dff88'; x.shadowBlur = 12; x.beginPath(); x.moveTo(pad.x1, pad.y); x.lineTo(pad.x2, pad.y); x.stroke(); x.shadowBlur = 0;
+    if ((t * 2 | 0) % 2) { x.fillStyle = '#4dff88'; x.fillRect(pad.x1, pad.y - 14, 2, 14); x.fillRect(pad.x2 - 2, pad.y - 14, 2, 14) }
+  }
+  for (const p of parts) { x.globalAlpha = Math.min(1, p.life); x.fillStyle = p.fire ? '#ff8a3d' : '#ffe35a'; x.fillRect(p.x - 2, p.y - 2, 4, 4) } x.globalAlpha = 1;
+  if (ship && !ship.dead) {
+    x.save(); x.translate(ship.x, ship.y); x.rotate(ship.a);
+    x.fillStyle = '#ddd'; x.beginPath(); x.arc(0, -4, 9, Math.PI, 0); x.fill(); x.fillRect(-11, -4, 22, 8);
+    x.strokeStyle = '#ddd'; x.lineWidth = 2; x.beginPath(); x.moveTo(-8, 4); x.lineTo(-13, 12); x.moveTo(8, 4); x.lineTo(13, 12); x.stroke();
+    x.fillStyle = '#3df5ff'; x.beginPath(); x.arc(0, -6, 4, 0, 7); x.fill(); x.restore();
+    const ok = ship.vy < 45 && Math.abs(ship.vx) < 25;
+    x.font = '700 13px system-ui'; x.textAlign = 'left'; x.fillStyle = ok ? '#4dff88' : '#ff4d6d';
+    x.fillText('Down speed: ' + Math.round(ship.vy) + (ok ? ' ✓' : ' ✗'), 14, 64); x.fillText('Side speed: ' + Math.round(Math.abs(ship.vx)), 14, 82);
+  }
+  if (msg) { x.fillStyle = '#ffe35a'; x.font = '900 26px system-ui'; x.textAlign = 'center'; x.fillText(msg.t, K.W / 2, K.H * .3) }
+});
+G.overlay('Lunar Lander', 'Hold 🔥 to fire your engine. ⟲ ⟳ tilt the ship.<br>Land gently on the green pad, standing straight.<br>Keep "Down speed" green. Fuel is limited!', 'Start', start);
+</script></body></html>

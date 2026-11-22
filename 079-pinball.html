@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Pinball</title><script>
+// Shared helpers for every arcade game
+const G = (() => {
+  const st = document.createElement('style');
+  st.textContent = `
+html,body{margin:0;height:100%;background:#0b0820;color:#fff;font-family:system-ui,-apple-system,sans-serif;overflow:hidden;
+  touch-action:none;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
+.hud{position:fixed;top:12px;left:0;right:0;display:flex;justify-content:space-between;padding:0 18px;font-weight:700;
+  letter-spacing:1px;z-index:5;pointer-events:none;color:#cfe8ff}
+.hud b{color:#fff;font-size:20px;text-shadow:0 0 10px #3df5ff}
+.ov{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  background:rgba(8,5,25,.85);z-index:10;text-align:center;padding:20px}
+.ov h1{margin:0 0 10px;font-size:clamp(30px,8vw,52px);background:linear-gradient(90deg,#3df5ff,#ff3df0);
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.ov p{opacity:.88;line-height:1.6;max-width:340px;margin:6px 0}
+.ov button{margin-top:18px;font:inherit;font-weight:800;font-size:18px;padding:13px 34px;border:0;border-radius:999px;
+  background:linear-gradient(90deg,#3df5ff,#ff3df0);color:#0b0820;cursor:pointer}
+`;
+  document.head.appendChild(st);
+
+  let ac;
+  function beep(f, d = .08, type = 'sine', v = .1) {
+    try {
+      ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.type = type; o.frequency.value = f;
+      g.gain.setValueAtTime(v, ac.currentTime);
+      g.gain.exponentialRampToValueAtTime(.001, ac.currentTime + d);
+      o.connect(g).connect(ac.destination); o.start(); o.stop(ac.currentTime + d);
+    } catch (e) {}
+  }
+  function getBest(k) { try { return +localStorage.getItem('arc_' + k) || 0 } catch (e) { return 0 } }
+  function setBest(k, v) { try { localStorage.setItem('arc_' + k, v) } catch (e) {} }
+  // Save if higher (or lower when lowerIsBetter). Returns current best.
+  function best(k, v, lowerIsBetter) {
+    const b = getBest(k);
+    if (v != null && (!b || (lowerIsBetter ? v < b : v > b))) { setBest(k, v); return v }
+    return b;
+  }
+  function set(id, v) { const e = document.getElementById(id); if (e) e.textContent = v }
+
+  function overlay(title, html, btn, cb) {
+    let o = document.querySelector('.ov');
+    if (!o) { o = document.createElement('div'); o.className = 'ov'; document.body.appendChild(o) }
+    o.innerHTML = `<h1>${title}</h1><p>${html}</p><button>${btn}</button>`;
+    o.style.display = 'flex';
+    o.addEventListener('pointerdown', e => e.stopPropagation());
+    o.querySelector('button').onclick = e => { e.stopPropagation(); o.style.display = 'none'; beep(440, .08, 'triangle'); cb() };
+  }
+
+  // Swipe (touch/mouse) + arrow keys / WASD → 'L','R','U','D'
+  function swipe(cb) {
+    let sx = null, sy = null;
+    addEventListener('pointerdown', e => { sx = e.clientX; sy = e.clientY });
+    addEventListener('pointerup', e => {
+      if (sx == null) return;
+      const dx = e.clientX - sx, dy = e.clientY - sy; sx = null;
+      if (Math.max(Math.abs(dx), Math.abs(dy)) < 20) return;
+      cb(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'R' : 'L') : (dy > 0 ? 'D' : 'U'));
+    });
+    addEventListener('keydown', e => {
+      const m = { ArrowLeft: 'L', ArrowRight: 'R', ArrowUp: 'U', ArrowDown: 'D', a: 'L', d: 'R', w: 'U', s: 'D' }[e.key];
+      if (m) { e.preventDefault(); cb(m) }
+    });
+  }
+
+  // Full-screen crisp canvas. Returns {c, x, W, H}; set .onresize to react.
+  function canvas() {
+    const c = document.createElement('canvas');
+    c.style.cssText = 'display:block;width:100vw;height:100vh';
+    document.body.prepend(c);
+    const o = { c, x: c.getContext('2d'), W: 0, H: 0 };
+    function r() {
+      const d = Math.min(devicePixelRatio || 1, 2);
+      o.W = innerWidth; o.H = innerHeight; c.width = o.W * d; c.height = o.H * d;
+      o.x.setTransform(d, 0, 0, d, 0, 0); o.onresize && o.onresize();
+    }
+    addEventListener('resize', r); r();
+    return o;
+  }
+
+  // Game loop with delta time (seconds, capped)
+  function loop(fn) {
+    let last = performance.now();
+    function f(t) { const dt = Math.min(.05, (t - last) / 1000); last = t; fn(dt); requestAnimationFrame(f) }
+    requestAnimationFrame(f);
+  }
+
+  return { beep, getBest, setBest, best, set, overlay, swipe, canvas, loop };
+})();
+
+</script></head><body>
+<div class="hud"><span>Score <b id="s">0</b></span><span>Balls <b id="l">3</b></span><span>Best <b id="b">0</b></span></div>
+<script>
+const K = G.canvas(), x = K.x, BR = 10, GRAV = 900;
+let ball = null, walls = [], bumpers = [], flips = [], targets = [], score = 0, balls = 3, run = false, hold = { L: 0, R: 0 }, lights = [], T, launchT = 0;
+G.set('b', G.best('pinball'));
+function build() {
+  const w = Math.min(K.W, 460), l = (K.W - w) / 2, r = l + w, top = 50, bot = K.H - 40, fy = bot - 90, fl = w * .2;
+  T = { l, r, top, bot, w };
+  walls = [[l, top + 60, l, fy - 50], [r, top + 60, r, fy - 50], [l, top + 60, l + 60, top], [l + 60, top, r - 60, top], [r - 60, top, r, top + 60],
+    [l, fy - 50, l + w * .5 - fl - 8, fy + 2], [r, fy - 50, r - w * .5 + fl + 8, fy + 2],
+    [l + 40, fy - 140, l + 40, fy - 70], [l + 40, fy - 70, l + 90, fy - 40], [r - 40, fy - 140, r - 40, fy - 70], [r - 40, fy - 70, r - 90, fy - 40]];
+  flips = [{ px: l + w * .5 - fl - 8, py: fy + 2, len: fl, side: 1, a: .5, va: 0, key: 'L' }, { px: r - w * .5 + fl + 8, py: fy + 2, len: fl, side: -1, a: .5, va: 0, key: 'R' }];
+  bumpers = [{ x: l + w * .3, y: top + 150, r: 24 }, { x: l + w * .7, y: top + 150, r: 24 }, { x: l + w * .5, y: top + 230, r: 26 }, { x: l + w * .5, y: top + 90, r: 18 }];
+  targets = [0, 1, 2, 3, 4].map(i => ({ x: l + w * (.2 + i * .15), y: top + 330, hit: 0 }));
+}
+function serve() { ball = { x: T.l + T.w * (.3 + Math.random() * .4), y: T.top + 40, vx: (Math.random() - .5) * 200, vy: 0 }; launchT = .6 }
+function start() { build(); score = 0; balls = 3; run = true; G.set('s', 0); G.set('l', 3); serve() }
+addEventListener('pointerdown', e => { if (e.clientX < K.W / 2) hold.L = 1; else hold.R = 1 });
+addEventListener('pointerup', e => { if (e.clientX < K.W / 2) hold.L = 0; else hold.R = 0; if (!e.isPrimary) return; });
+addEventListener('pointercancel', () => { hold.L = hold.R = 0 });
+addEventListener('touchend', e => { if (!e.touches.length) hold.L = hold.R = 0 });
+addEventListener('keydown', e => { if (e.key === 'ArrowLeft' || e.key === 'z') hold.L = 1; if (e.key === 'ArrowRight' || e.key === '/') hold.R = 1 });
+addEventListener('keyup', e => { if (e.key === 'ArrowLeft' || e.key === 'z') hold.L = 0; if (e.key === 'ArrowRight' || e.key === '/') hold.R = 0 });
+const fEnd = f => { const ang = f.side > 0 ? f.a : Math.PI - f.a; return [f.px + Math.cos(ang) * f.len, f.py + Math.sin(ang) * f.len] };
+function segHit(x1, y1, x2, y2, svx = 0, svy = 0, bounce = .55, kick = 0) {
+  const dx = x2 - x1, dy = y2 - y1, L2 = dx * dx + dy * dy, k = Math.max(0, Math.min(1, ((ball.x - x1) * dx + (ball.y - y1) * dy) / L2));
+  const cx = x1 + dx * k, cy = y1 + dy * k, ex = ball.x - cx, ey = ball.y - cy, d = Math.hypot(ex, ey);
+  if (d >= BR || d === 0) return false; const nx = ex / d, ny = ey / d; ball.x = cx + nx * BR; ball.y = cy + ny * BR;
+  const rvx = ball.vx - svx * k, rvy = ball.vy - svy * k, vn = rvx * nx + rvy * ny;
+  if (vn < 0) { ball.vx -= (1 + bounce) * vn * nx; ball.vy -= (1 + bounce) * vn * ny; if (kick) { ball.vx += nx * kick * k; ball.vy += ny * kick * k } }
+  return true;
+}
+G.loop(dt => {
+  for (const l of lights) l.life -= dt * 2; lights = lights.filter(l => l.life > 0);
+  if (run && ball) {
+    for (const f of flips) { const target = hold[f.key] ? -.45 : .5, old = f.a; f.a += Math.max(-dt * 16, Math.min(dt * 16, target - f.a)); f.va = (f.a - old) / dt; if (f.a !== old && Math.abs(f.va) > 5 && target < 0 && old > .4) G.beep(200, .03, 'square', .04) }
+    if (launchT > 0) launchT -= dt;
+    const steps = 8;
+    for (let s = 0; s < steps; s++) {
+      const h = dt / steps; ball.vy += GRAV * h; ball.x += ball.vx * h; ball.y += ball.vy * h;
+      for (const w of walls) segHit(...w);
+      for (const f of flips) { const [ex, ey] = fEnd(f), up = f.va < -1; const vel = up ? f.va * f.len * -f.side : 0; // tangential speed approx
+        const ang = f.side > 0 ? f.a : Math.PI - f.a, svx = up ? -Math.sin(ang) * f.va * f.len * (f.side > 0 ? 1 : -1) : 0, svy = up ? Math.cos(ang) * f.va * f.len * (f.side > 0 ? 1 : -1) : 0;
+        segHit(f.px, f.py, ex, ey, svx, svy, .35, up ? 250 : 0) }
+      for (const b of bumpers) { const dx = ball.x - b.x, dy = ball.y - b.y, d = Math.hypot(dx, dy); if (d < b.r + BR) { const nx = dx / d, ny = dy / d; ball.x = b.x + nx * (b.r + BR); ball.y = b.y + ny * (b.r + BR); const vn = ball.vx * nx + ball.vy * ny; ball.vx -= 2 * vn * nx; ball.vy -= 2 * vn * ny; ball.vx += nx * 260; ball.vy += ny * 260; score += 10; G.set('s', score); lights.push({ x: b.x, y: b.y, r: b.r, life: 1 }); G.beep(600 + Math.random() * 300, .06, 'triangle', .07) } }
+      for (const t of targets) if (!t.hit && Math.abs(ball.x - t.x) < 16 && Math.abs(ball.y - t.y) < 12) { t.hit = 1; score += 50; G.set('s', score); G.beep(1000, .1, 'triangle'); if (targets.every(q => q.hit)) { score += 500; G.set('s', score); G.beep(1300, .3, 'triangle'); setTimeout(() => targets.forEach(q => q.hit = 0), 600) } }
+      const sp = Math.hypot(ball.vx, ball.vy); if (sp > 1500) { ball.vx *= 1500 / sp; ball.vy *= 1500 / sp }
+    }
+    if (ball.y > K.H + 20 || ball.x < T.l - 30 || ball.x > T.r + 30) {
+      balls--; G.set('l', balls); G.beep(130, .4, 'sawtooth');
+      if (balls <= 0) { run = false; ball = null; G.set('b', G.best('pinball', score)); G.overlay('Game Over', 'Score: ' + score, 'Play again', start) } else serve();
+    }
+  }
+  x.fillStyle = '#05030f'; x.fillRect(0, 0, K.W, K.H); if (!T) return;
+  x.fillStyle = '#120a35'; x.fillRect(T.l, T.top, T.w, T.bot - T.top);
+  x.strokeStyle = '#3df5ff'; x.lineWidth = 4; x.lineCap = 'round'; x.shadowColor = '#3df5ff'; x.shadowBlur = 10; for (const w of walls) { x.beginPath(); x.moveTo(w[0], w[1]); x.lineTo(w[2], w[3]); x.stroke() }
+  for (const b of bumpers) { const lit = lights.find(l => l.x === b.x && l.y === b.y); x.fillStyle = lit ? '#fff' : '#ff3df0'; x.shadowColor = '#ff3df0'; x.shadowBlur = lit ? 30 : 14; x.beginPath(); x.arc(b.x, b.y, b.r, 0, 7); x.fill(); x.fillStyle = '#0b0820'; x.beginPath(); x.arc(b.x, b.y, b.r * .5, 0, 7); x.fill() }
+  for (const t of targets) { x.fillStyle = t.hit ? '#ffe35a' : '#3a2a6a'; x.shadowColor = '#ffe35a'; x.shadowBlur = t.hit ? 14 : 0; x.fillRect(t.x - 12, t.y - 5, 24, 10) }
+  x.strokeStyle = '#ffe35a'; x.shadowColor = '#ffe35a'; x.shadowBlur = 12; x.lineWidth = 10; for (const f of flips) { const [ex, ey] = fEnd(f); x.beginPath(); x.moveTo(f.px, f.py); x.lineTo(ex, ey); x.stroke() }
+  x.shadowBlur = 0;
+  if (ball) { const g = x.createRadialGradient(ball.x - 3, ball.y - 3, 1, ball.x, ball.y, BR); g.addColorStop(0, '#fff'); g.addColorStop(1, '#8aa'); x.fillStyle = g; x.beginPath(); x.arc(ball.x, ball.y, BR, 0, 7); x.fill() }
+  if (run) { x.fillStyle = 'rgba(255,255,255,.35)'; x.font = '700 13px system-ui'; x.textAlign = 'center'; x.fillText('◀ hold left side', T.l + T.w * .25, K.H - 16); x.fillText('hold right side ▶', T.l + T.w * .75, K.H - 16) }
+});
+G.overlay('Pinball', 'Hold the LEFT side of the screen for the left flipper, RIGHT side for the right flipper.<br>Hit pink bumpers (+10) and light all 5 yellow targets (+500 bonus).<br>3 balls.', 'Start', start);
+</script></body></html>
